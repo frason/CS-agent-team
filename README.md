@@ -131,24 +131,27 @@ To enable: fill in the `github` block, authenticate `gh` for cron (`gh auth logi
 ## Repo layout
 
 ```
-agent-team/
+CS-agent-team/
 ├── README.md
-├── SKILL.md                  # how Claude installs & operates the system
 ├── .gitignore
-├── scripts/
-│   ├── dispatcher.sh         # cron heartbeat
-│   └── gh_sync.sh            # GitHub bridge (optional)
-└── assets/
-    ├── schedule.json         # policy / preferences
-    ├── settings.json         # permission allowlist
-    ├── env.example           # cron auth template
-    ├── SPEC.md               # living-spec template
-    ├── STATUS.md             # status-board template
-    └── agents/
-        ├── pm.md
-        ├── lead.md
-        ├── worker.md
-        └── karen.md
+├── agent-team.skill              # packaged bundle (zip)
+└── skills/
+    └── agent-team/
+        ├── SKILL.md              # how Claude installs & operates the system
+        ├── scripts/
+        │   ├── dispatcher.sh     # cron heartbeat
+        │   └── gh_sync.sh        # GitHub bridge (optional)
+        └── assets/
+            ├── schedule.json     # policy / preferences
+            ├── settings.json     # permission allowlist
+            ├── env.example       # cron auth template
+            ├── SPEC.md           # living-spec template
+            ├── STATUS.md         # status-board template
+            └── agents/
+                ├── pm.md
+                ├── lead.md
+                ├── worker.md
+                └── karen.md
 ```
 
 ## Limitations & honest caveats
