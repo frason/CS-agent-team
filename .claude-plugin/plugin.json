@@ -1,0 +1,11 @@
+{
+  "name": "agent-team",
+  "description": "Background agent-team for Claude Code: a cheap PM agent, a planning lead, and worker agents that a cron heartbeat runs one at a time on a stagger to pace token use under a subscription's rolling 5-hour limit.",
+  "version": "0.1.0",
+  "author": {
+    "name": "frason"
+  },
+  "homepage": "https://github.com/frason/CS-agent-team",
+  "repository": "https://github.com/frason/CS-agent-team",
+  "keywords": ["agents", "orchestration", "cron", "background", "delegation"]
+}

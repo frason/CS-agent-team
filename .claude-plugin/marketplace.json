@@ -1,0 +1,15 @@
+{
+  "name": "cs-agent-team",
+  "owner": {
+    "name": "frason"
+  },
+  "description": "Marketplace hosting the agent-team plugin for Claude Code.",
+  "plugins": [
+    {
+      "name": "agent-team",
+      "source": "./",
+      "description": "Background agent-team for Claude Code: a cheap PM agent, a planning lead, and worker agents that a cron heartbeat runs one at a time on a stagger to pace token use under a subscription's rolling 5-hour limit.",
+      "category": "orchestration"
+    }
+  ]
+}

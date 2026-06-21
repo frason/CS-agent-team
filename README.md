@@ -52,13 +52,21 @@ cron ─ every 10m ─▶ dispatcher ─▶ one worker  OR  one lead pass
 
 ## Install
 
-This repo *is* the skill. Pick one path:
+This repo is a Claude Code plugin marketplace whose one plugin bundles the `agent-team` skill. Pick one path:
 
-### As a Claude Code skill (recommended)
-1. Copy this folder into your skills directory — `~/.claude/skills/agent-team/` (personal) or `<project>/.claude/skills/agent-team/`. (Or install the packaged `agent-team.skill`.)
-2. In the project you want worked on, ask Claude to **"set up the agent team."** The skill scaffolds the directories, copies the scripts, and installs the `pm` / `lead` / `worker` / `karen` agents into `.claude/agents/`.
+### As a Claude Code plugin (recommended)
+In Claude Code:
+```
+/plugin marketplace add frason/CS-agent-team
+/plugin install agent-team@cs-agent-team
+```
+Then, in the project you want worked on, ask Claude to **"set up the agent team."** The skill scaffolds the directories, copies the scripts, and installs the `pm` / `lead` / `worker` / `karen` agents into `.claude/agents/`. Update later with `/plugin marketplace update cs-agent-team`.
+
+### As a bare skill
+Copy the skill folder into your skills directory — `skills/agent-team/` → `~/.claude/skills/agent-team/` (personal) or `<project>/.claude/skills/agent-team/`. (Or install the packaged `agent-team.skill`.) Then ask Claude to "set up the agent team" as above.
 
 ### Manual
+The skill files live under `skills/agent-team/`. Run these from that folder.
 1. Scaffold the runtime dirs in your project:
    ```bash
    mkdir -p scripts state logs artifacts \
@@ -132,6 +140,9 @@ To enable: fill in the `github` block, authenticate `gh` for cron (`gh auth logi
 
 ```
 CS-agent-team/
+├── .claude-plugin/
+│   ├── marketplace.json          # marketplace catalog (lists the plugin)
+│   └── plugin.json               # plugin manifest
 ├── README.md
 ├── .gitignore
 ├── agent-team.skill              # packaged bundle (zip)
