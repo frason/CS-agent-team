@@ -80,6 +80,12 @@ gh_enabled=$(  jq -r '.github.enabled         // false'    "$SCHEDULE")
 max_turns=$(   jq -r '.max_turns              // 25'       "$SCHEDULE")
 soft_budget=$( jq -r '.soft_budget_usd_per_5h // 0'        "$SCHEDULE")
 
+# ---- refresh the rolling-budget summary in STATUS.md (token-free, gated) ----
+# Runs before the throttle check so a throttled tick still updates the meter.
+if [ "$(jq -r '.telemetry.show_rolling_budget_in_status // false' "$SCHEDULE")" = "true" ]; then
+  bash "$SCRIPT_DIR/budget_check.sh" || true
+fi
+
 # ---- soft self-throttle: heuristic cap on spend in the trailing 5h window ----
 # A proxy for your subscription's rolling 5-hour limit. Set to 0 to disable.
 if [ -f "$USAGE" ] && [ "$soft_budget" != "0" ]; then
