@@ -97,11 +97,14 @@ run_agent() {  # $1 = agent name, $2 = model, $3 = prompt file, [$4 = max-turns 
   # Capture stdout regardless of exit code. A --max-turns cutoff exits non-zero but still
   # prints a JSON result (subtype "error_max_turns") with the real cost/usage, and the
   # agent's edits already landed (it runs in acceptEdits).
-  out=$(claude -p "$(cat "$pf")" \
+  # Feed the prompt on STDIN (not as an argument): worker/karen task files start with "---"
+  # YAML frontmatter, and claude's arg parser treats a leading "---" as an unknown option
+  # ("error: unknown option '---'"), so passing the file as an argument fails every worker run.
+  out=$(claude -p \
           --agent "$agent" \
           --model "$model" \
           --max-turns "$mt" \
-          --output-format json 2>>"$ROOT/logs/dispatcher.log") && rc=0 || rc=$?
+          --output-format json < "$pf" 2>>"$ROOT/logs/dispatcher.log") && rc=0 || rc=$?
 
   # Always record cost/usage when we got parseable JSON, so the soft budget can't be
   # silently bypassed by the most expensive runs (the ones that hit the cap).
