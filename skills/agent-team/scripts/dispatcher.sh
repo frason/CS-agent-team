@@ -10,6 +10,10 @@
 # lead-inbox has work, and only if the lead isn't paused) OR one worker lane
 # (round-robin, cooldown-aware, skipping paused lanes). Never both, never two at once.
 #
+# Manual / test flags (bypass window and cooldown checks; still respect paused flags):
+#   dispatcher.sh --force-lead               run a lead pass right now
+#   dispatcher.sh --force-worker <lane>      run one task from <lane> right now
+#
 # Portable across macOS (bash 3.2, no flock, BSD date/grep) and Linux.
 
 set -euo pipefail
@@ -23,6 +27,23 @@ cd "$ROOT"
 # cron runs with a minimal environment, so put PATH and CLAUDE_CODE_OAUTH_TOKEN
 # in <root>/.env (see env.example). This keeps you on your subscription, not API.
 if [ -f "$ROOT/.env" ]; then set -a; . "$ROOT/.env"; set +a; fi
+
+# ---- parse manual force flags ----
+force_lead=false
+force_lane=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --force-lead)
+      force_lead=true; shift ;;
+    --force-worker)
+      [ -n "${2:-}" ] || { echo "$(date +%Y-%m-%dT%H:%M:%S) --force-worker requires a lane name"; exit 1; }
+      force_lane="$2"; shift 2 ;;
+    *)
+      echo "$(date +%Y-%m-%dT%H:%M:%S) unknown flag: $1"
+      echo "usage: dispatcher.sh [--force-lead | --force-worker <lane>]"
+      exit 1 ;;
+  esac
+done
 
 SCHEDULE="$ROOT/schedule.json"
 STATUS="$ROOT/state/STATUS.md"
@@ -66,8 +87,10 @@ hour=$((   10#$(date +%H) ))
 
 ah_start=$(jq -r '.active_hours.start // 0'  "$SCHEDULE")
 ah_end=$(  jq -r '.active_hours.end   // 24' "$SCHEDULE")
-if (( hour < ah_start || hour >= ah_end )); then
-  echo "$(TS) outside active hours (${ah_start}-${ah_end}); skipping"; exit 0
+if [ "$force_lead" != "true" ] && [ -z "$force_lane" ]; then
+  if (( hour < ah_start || hour >= ah_end )); then
+    echo "$(TS) outside active hours (${ah_start}-${ah_end}); skipping"; exit 0
+  fi
 fi
 
 cooldown=$(    jq -r '.lane_cooldown_min      // 30'       "$SCHEDULE")
@@ -93,7 +116,8 @@ fi
 
 # ---- soft self-throttle: heuristic cap on spend in the trailing 5h window ----
 # A proxy for your subscription's rolling 5-hour limit. Set to 0 to disable.
-if [ -f "$USAGE" ] && [ "$soft_budget" != "0" ]; then
+# Skipped for --force-lead / --force-worker so manual test runs are never blocked.
+if [ -f "$USAGE" ] && [ "$soft_budget" != "0" ] && [ "$force_lead" != "true" ] && [ -z "$force_lane" ]; then
   cutoff=$(( now_epoch - 5*3600 ))
   spent=$(jq -s --argjson c "$cutoff" '[ .[] | select(.ts >= $c) | .cost ] | add // 0' "$USAGE" 2>/dev/null || echo 0)
   if [ "$(jq -n --argjson s "$spent" --argjson b "$soft_budget" '$s >= $b')" = "true" ]; then
@@ -212,14 +236,21 @@ fi
 # 1) Lead — runs in its windows (not paused) if the inbox has work OR tasks await verification.
 is_window=$(jq -r --argjson m "$minute" '((.lead_windows // [0,30]) | index($m)) != null' "$SCHEDULE")
 
-# GitHub edge: at lead windows, sync issues/comments in and questions out (deterministic, gated, token-free)
-if [ "$gh_enabled" = "true" ] && [ "$is_window" = "true" ]; then
+# GitHub edge: at lead windows (or --force-lead), sync issues/comments in and questions out
+if [ "$gh_enabled" = "true" ] && { [ "$is_window" = "true" ] || [ "$force_lead" = "true" ]; }; then
   bash "$SCRIPT_DIR/gh_sync.sh" || log "gh-sync failed (see logs/dispatcher.log)"
 fi
 
 inbox_count=$(find "$INBOX" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
 review_count=$(find "$REVIEW" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
 
+# --force-lead but nothing to do: exit with a helpful message rather than falling through to worker.
+if [ "$force_lead" = "true" ] && [ "$inbox_count" -eq 0 ] && [ "$review_count" -eq 0 ]; then
+  echo "$(TS) --force-lead: lead-inbox/ and queue/review/ are both empty; nothing for the lead to do"; exit 0
+fi
+
+if { [ "$is_window" = "true" ] || [ "$force_lead" = "true" ]; } && \
+   [ "$lead_paused" != "true" ] && { [ "$inbox_count" -gt 0 ] || [ "$review_count" -gt 0 ]; }; then
 if [ "$is_window" = "true" ] && [ "$lead_paused" != "true" ] && { [ "$inbox_count" -gt 0 ] || [ "$review_count" -gt 0 ]; }; then
   # Snapshot exactly the inbox items we feed to the lead so the dispatcher can archive them
   # itself after the run — deterministically, not relying on the LLM to do file housekeeping
@@ -272,22 +303,34 @@ if [ "$is_window" = "true" ] && [ "$lead_paused" != "true" ] && { [ "$inbox_coun
 fi
 
 # 2) Otherwise — run the next eligible worker lane.
-#    Choose the lane that (a) isn't paused, (b) has a pending task, (c) is past its
-#    cooldown, and (d) has waited the longest (oldest last-run). One lane per tick.
-best_lane=""; best_task=""; best_last="$now_epoch"
-while IFS= read -r lane; do
-  [ -z "$lane" ] && continue
-  is_paused_lane=$(jq -r --arg l "$lane" '((.paused_lanes // []) | index($l)) != null' "$SCHEDULE")
-  [ "$is_paused_lane" = "true" ] && continue
-  task=$(grep -rilE "^lane:[[:space:]]*${lane}[[:space:]]*$" --include='*.md' "$TODO" 2>/dev/null | sort | head -1 || true)
-  [ -z "$task" ] && continue
-  last=$(jq -r --arg l "$lane" '.[$l] // 0' "$LANES_STATE")
-  (( now_epoch - last < cooldown * 60 )) && continue
-  if (( last <= best_last )); then best_last="$last"; best_lane="$lane"; best_task="$task"; fi
-done < <(jq -r '.lanes[]' "$SCHEDULE")
+if [ -n "$force_lane" ]; then
+  # --force-worker: skip cooldown and round-robin; run the named lane right now.
+  is_paused_lane=$(jq -r --arg l "$force_lane" '((.paused_lanes // []) | index($l)) != null' "$SCHEDULE")
+  if [ "$is_paused_lane" = "true" ]; then
+    echo "$(TS) --force-worker: lane '$force_lane' is paused in schedule.json; skipping"; exit 0
+  fi
+  best_task=$(grep -rilE "^lane:[[:space:]]*${force_lane}[[:space:]]*$" --include='*.md' "$TODO" 2>/dev/null | sort | head -1 || true)
+  if [ -z "$best_task" ]; then
+    echo "$(TS) --force-worker: no pending task for lane '$force_lane' in queue/todo/"; exit 0
+  fi
+  best_lane="$force_lane"
+else
+  # Normal round-robin: (a) not paused, (b) has a task, (c) past cooldown, (d) oldest last-run.
+  best_lane=""; best_task=""; best_last="$now_epoch"
+  while IFS= read -r lane; do
+    [ -z "$lane" ] && continue
+    is_paused_lane=$(jq -r --arg l "$lane" '((.paused_lanes // []) | index($l)) != null' "$SCHEDULE")
+    [ "$is_paused_lane" = "true" ] && continue
+    task=$(grep -rilE "^lane:[[:space:]]*${lane}[[:space:]]*$" --include='*.md' "$TODO" 2>/dev/null | sort | head -1 || true)
+    [ -z "$task" ] && continue
+    last=$(jq -r --arg l "$lane" '.[$l] // 0' "$LANES_STATE")
+    (( now_epoch - last < cooldown * 60 )) && continue
+    if (( last <= best_last )); then best_last="$last"; best_lane="$lane"; best_task="$task"; fi
+  done < <(jq -r '.lanes[]' "$SCHEDULE")
 
-if [ -z "$best_lane" ]; then
-  echo "$(TS) nothing eligible (idle, paused, or all lanes cooling down)"; exit 0
+  if [ -z "$best_lane" ]; then
+    echo "$(TS) nothing eligible (idle, paused, or all lanes cooling down)"; exit 0
+  fi
 fi
 
 # claim the task so a later tick can't grab it too

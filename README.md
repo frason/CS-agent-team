@@ -128,6 +128,11 @@ Open the PM whenever you like: `claude --agent pm`.
 | `max_turns` | Hard cap on agentic turns per run. |
 | `require_verification` | `true` = every task must pass karen before `done/` (stricter, pricier). `false` (default) = verify in batches at milestones. |
 | `soft_budget_usd_per_5h` | Self-throttle: skip ticks once trailing-5h spend hits this. `0` disables. |
+| `auto_accept_low_risk` | `true` skips karen for tasks marked `risk: low` whose lane is in `auto_accept_low_risk_lanes` (default `["docs"]`). Classification is mechanical (lane membership), not self-reported by the LLM. |
+| `auto_accept_low_risk_lanes` | Lanes eligible for auto-accept. Default `["docs"]`. Only read-only lanes that can't break running code should be listed here. |
+| `pre_dispatch.enabled` | `true` runs a task's `pre_dispatch_cmd:` before the worker boots and injects the output as context. Off by default — see Pre-dispatch below. |
+| `pre_dispatch.timeout_sec` | Max seconds the pre-dispatch command may run. Default `10`. |
+| `pre_dispatch.max_bytes` | Max bytes of pre-dispatch output injected into the task. Default `4096`. |
 | `telemetry.show_rolling_budget_in_status` | `true` writes a live 5h-spend meter to the top of `state/STATUS.md` each tick (token-free), so the PM can report utilization without recomputing. |
 | `active_hours` | Only run between `start` and `end` (24-hour clock). |
 | `github.*` | Optional GitHub edge: `enabled`, `repo` (owner/name), `inbox_label`, `base_branch`, `work_branch`. |
