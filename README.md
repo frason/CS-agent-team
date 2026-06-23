@@ -124,7 +124,7 @@ Open the PM whenever you like: `claude --agent pm`.
 | `lanes` | Worker lanes (categories), sized by the lead from the plan. |
 | `lane_cooldown_min` | A lane won't rerun until this many minutes pass — the main pacing knob. |
 | `lead_windows` | Minutes-of-hour the lead may run, e.g. `[0, 30]`. |
-| `worker_model` / `lead_model` / `karen_model` | Models per role (`haiku`, `sonnet`, `opus`, `fable`). A task's own `model:` overrides. |
+| `worker_model` / `lead_model` / `karen_model` | Models per role. Accepts tier aliases (`haiku`, `sonnet`, `opus`, `fable`) that auto-track current releases, or pinned model IDs (e.g. `claude-haiku-4-5-20251001`). Current tiers: Haiku 4.5, Sonnet 4.6, Opus 4.8, Fable 5. A task's own `model:` field overrides the default for that task. |
 | `max_turns` | Hard cap on agentic turns per run. |
 | `require_verification` | `true` = every task must pass karen before `done/` (stricter, pricier). `false` (default) = verify in batches at milestones. |
 | `soft_budget_usd_per_5h` | Self-throttle: skip ticks once trailing-5h spend hits this. `0` disables. |
@@ -133,6 +133,25 @@ Open the PM whenever you like: `claude --agent pm`.
 | `github.*` | Optional GitHub edge: `enabled`, `repo` (owner/name), `inbox_label`, `base_branch`, `work_branch`. |
 
 **Cadence tip:** four lanes on 10-minute ticks settle at ~40-minute spacing each. Want a true 30-minute cadence? Use three lanes, or tighten the cron to ~7-minute ticks.
+
+## Pre-dispatch context injection (optional)
+
+When `pre_dispatch.enabled` is `true`, the dispatcher runs a task's optional `pre_dispatch_cmd:` frontmatter field before booting the worker and appends the output to the task file as a `## Pre-dispatch context` block. This gives the worker targeted, up-to-date context (e.g. relevant file listing, grep results) without burning tokens in the worker's planning turn.
+
+The lead sets `pre_dispatch_cmd:` on tasks where it helps. Example task frontmatter:
+
+```
+pre_dispatch_cmd: grep -rn "TODO" src/docs
+risk: low
+```
+
+**Security:** the command string is author-controlled (the lead, an LLM) and runs unattended, so it is tightly sandboxed:
+- Shell metacharacters (`;`, `|`, `&`, `>`, `<`, `` ` ``, `$(`, `${`, newlines) are rejected outright.
+- The leading command must be on a read-only allowlist: `grep`, `rg`, `find`, `ls`, `tree`, `cat`, `head`, `wc`, `sed -n`, `git ls-files`, `git grep`.
+- Output is capped at `pre_dispatch.max_bytes` and the command is killed after `pre_dispatch.timeout_sec`.
+- Nothing that can mutate state is ever allowed.
+
+Off by default. Enable with `pre_dispatch.enabled: true` in `schedule.json`.
 
 ## GitHub integration (optional)
 

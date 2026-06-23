@@ -35,6 +35,8 @@ requests, or answers to your earlier questions (titled "answer: ..."). For each 
    depends_on: [<ids this task waits for, e.g. T010, T011 — omit or [] if none>]
    model: haiku
    created: <ISO8601 timestamp>
+   risk: <low|normal — optional; "low" on a docs lane enables auto-accept when configured>
+   pre_dispatch_cmd: <optional read-only shell command whose output is injected as context>
    ---
    # <short task title>
    ## Goal
