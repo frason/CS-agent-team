@@ -3,14 +3,7 @@
   "worker_model": "haiku",
   "karen_model": "sonnet",
   "max_turns": 25,
-  "lead_max_turns": 50,
   "soft_budget_usd_per_5h": 0,
-  "auto_accept_low_risk": false,
-  "auto_accept_low_risk_lanes": ["docs"],
-  "pre_dispatch": {
-    "enabled": false,
-    "timeout_sec": 10,
-    "max_bytes": 4096
   "telemetry": {
     "show_rolling_budget_in_status": true
   },

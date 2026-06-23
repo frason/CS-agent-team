@@ -2,9 +2,10 @@
 #
 # setup.sh — interactive one-shot installer for the agent team.
 #
-# Automates the "Manual" checklist from the README: scaffolds the runtime tree,
-# copies the asset templates into place, checks dependencies (jq, claude), seeds
-# .env, and offers to append the cron heartbeat line.
+# Automates the setup checklist from the README: scaffolds the runtime tree,
+# copies the asset templates into place, checks dependencies (jq, gh, claude),
+# seeds .env, creates the required GitHub labels, and offers to install the cron
+# heartbeat.
 #
 # Safe to re-run: it never clobbers an existing schedule.json / .env / agent file,
 # and it won't add a second crontab entry if the dispatcher is already scheduled.
@@ -29,13 +30,9 @@ say "== Agent Team setup =="
 say "Project root: $ROOT"
 say
 
-# 1) Runtime directory tree (the same set the dispatcher creates on each tick).
-mkdir -p "$ROOT/state" "$ROOT/logs" "$ROOT/artifacts" \
-         "$ROOT/queue/todo" "$ROOT/queue/doing" "$ROOT/queue/done" \
-         "$ROOT/queue/review" "$ROOT/queue/backlog" \
-         "$ROOT/lead-inbox/done" "$ROOT/questions/answered" \
-         "$ROOT/.claude/agents"
-say "✓ runtime directories"
+# 1) Runtime directory tree.
+mkdir -p "$ROOT/state" "$ROOT/logs" "$ROOT/.claude/agents"
+say "✓ runtime directories (state/, logs/, .claude/agents/)"
 
 # 2) Copy asset templates into place — never clobber a customized file.
 copy_once() {  # $1 = src, $2 = dest
@@ -64,9 +61,12 @@ say "✓ scripts executable"
 say
 
 # 4) Dependencies.
+missing_deps=false
+
 if command -v jq >/dev/null 2>&1; then
   say "✓ jq: $(command -v jq)"
 else
+  missing_deps=true
   say "✗ jq not found."
   if command -v brew >/dev/null 2>&1 && ask "Install jq with Homebrew now?" y; then
     brew install jq && say "✓ jq installed"
@@ -75,15 +75,30 @@ else
   fi
 fi
 
+if command -v gh >/dev/null 2>&1; then
+  say "✓ gh: $(command -v gh)"
+  if gh auth status >/dev/null 2>&1; then
+    say "✓ gh authenticated"
+  else
+    say "✗ gh is installed but not authenticated."
+    say "  Run 'gh auth login', then re-run this script."
+    missing_deps=true
+  fi
+else
+  missing_deps=true
+  say "✗ gh CLI not found. Install from https://cli.github.com, then re-run."
+fi
+
 CLAUDE_BIN="$(command -v claude || true)"
 if [ -n "$CLAUDE_BIN" ]; then
   say "✓ claude: $CLAUDE_BIN"
 else
   say "✗ claude CLI not found in PATH. Install it, then re-run."
+  missing_deps=true
 fi
 say
 
-# 5) .env — PATH + OAuth token so cron (a bare environment) can run on your subscription.
+# 5) .env — PATH + OAuth token so cron (a bare environment) can find claude/gh.
 if [ -f "$ROOT/.env" ]; then
   say "· kept existing .env"
 else
@@ -103,9 +118,25 @@ else
 fi
 say
 
-# 6) Cron heartbeat line — show it, append idempotently on request.
-mins=$(jq -r '.tick_minutes // 10' "$ROOT/schedule.json" 2>/dev/null || echo 10)
-CRON_LINE="*/$mins * * * * $SCRIPT_DIR/dispatcher.sh >> $ROOT/logs/dispatcher.log 2>&1"
+# 6) GitHub repository configuration.
+REPO=$(jq -r '.github.repo // ""' "$ROOT/schedule.json" 2>/dev/null || true)
+if [ -z "$REPO" ]; then
+  say "⚠ github.repo is not set in schedule.json."
+  say "  Edit schedule.json and set: \"github\": { \"repo\": \"owner/repo\" }"
+  say "  Then re-run this script (or run scripts/setup-labels.sh directly)."
+  say
+else
+  say "GitHub repo: $REPO"
+  if [ "$missing_deps" = "false" ] && ask "Create/update the four agent-team labels on $REPO now?" y; then
+    bash "$SCRIPT_DIR/setup-labels.sh"
+  else
+    say "  Skipped. Run 'bash scripts/setup-labels.sh' after setting github.repo."
+  fi
+  say
+fi
+
+# 7) Cron heartbeat line — show it, append idempotently on request.
+CRON_LINE="*/10 * * * * $SCRIPT_DIR/dispatcher.sh >> $ROOT/logs/dispatcher.log 2>&1"
 say "Cron heartbeat line:"
 say "  $CRON_LINE"
 if crontab -l 2>/dev/null | grep -Fq "$SCRIPT_DIR/dispatcher.sh"; then
@@ -120,4 +151,4 @@ else
 fi
 say
 say "Done. Test one tick by hand:"
-say "  $SCRIPT_DIR/dispatcher.sh"
+say "  $SCRIPT_DIR/dispatcher.sh --force-worker"

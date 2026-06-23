@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 #
-# gh_sync.sh — deterministic bridge between GitHub (the human edge) and the local blackboard.
+# gh_sync.sh — DEPRECATED. No longer called by dispatcher.sh.
 #
-# Called by dispatcher.sh at lead windows when github.enabled is true. It uses only the `gh`
-# CLI and file ops — NO model, no tokens. It moves the *human-facing* messages; agent-to-agent
-# coordination stays in local files, and PR creation is left to the lead (it writes the summary).
+# This script was the bridge between GitHub Issues and the old local file-based blackboard
+# (lead-inbox/, questions/). The current dispatcher uses GitHub Issues directly as the task
+# surface (label-based state machine) and no longer needs this sync layer.
+# Kept for reference only.
 #
+# Original purpose:
 #   Inbound : labeled open issues            -> lead-inbox/gh-issue-N.md
 #             new client comments on those    -> lead-inbox/answer-N-*.md
 #   Outbound: questions/*.md with `issue: N`  -> a comment on issue N
 #             questions/*.md with no issue    -> a NEW labeled issue is created and tracked
-#             (both then move to questions/posted/)
 #
 # Resilient by design: any missing tool / auth / network issue just logs and exits 0, so it can
 # never break a dispatcher tick.

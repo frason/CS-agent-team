@@ -1,193 +1,153 @@
 ---
 name: agent-team
-description: Set up and operate a background "agent team" for Claude Code — a cheap project-manager (PM) agent the client talks to, a "lead" agent that plans the work, and worker agents that a fixed cron heartbeat runs one at a time on a stagger, so something is almost always running but never all at once. This paces token use to fit a Claude subscription's rolling 5-hour limit. Use this skill whenever the client wants to delegate coding or side-project work to background agents, run staggered or scheduled subagents with cron, set up a PM / lead / orchestrator / worker team, keep working through long sessions without hitting the 5-hour usage limit, or bootstrap, install, configure, or adjust this kind of delegated agent system — even if they don't name it explicitly.
+description: Set up and operate a background "agent team" for Claude Code — a cron heartbeat dispatches worker agents one at a time against tasks tracked as GitHub Issues, and a verifier (karen) audits each finished task before closing it. Paces token use to fit a Claude subscription's rolling 5-hour limit. Use this skill whenever the client wants to delegate coding or side-project work to background agents, run staggered subagents with cron, set up an orchestrator/worker/verifier team, keep working through long sessions without hitting the 5-hour usage limit, or bootstrap, configure, or adjust this kind of delegated agent system — even if they don't name it explicitly.
 ---
 
 # Agent Team
 
-A background delegation system for Claude Code. The **client** talks only to a cheap **PM**
-agent. A cron **heartbeat** drips work to **workers** one at a time on a stagger. A **lead**
-turns the client's goals into small worker tasks. Everything runs on the client's Claude
+A background delegation system for Claude Code. Work is tracked as **GitHub Issues**. A cron
+**heartbeat** runs worker agents one at a time on a stagger. A **verifier** (karen) audits each
+finished task and closes the issue on pass. Everything runs on the client's Claude
 **subscription** (no API billing), and the design keeps token use low and paced so a long
-session doesn't burn the rolling 5-hour limit all at once.
+session never burns the rolling 5-hour limit all at once.
 
 ## The roles
 
-| Role   | Who/what | Runs | Model | Job |
-|--------|----------|------|-------|-----|
-| Client | the human | — | — | Sets goals; talks only to the PM. |
-| PM     | `claude --agent pm` | interactive, when the client opens it | haiku | Captures intent, reports status, relays the lead's questions, edits the schedule, facilitates direct sessions. Never does heavy work. |
-| Lead   | `--agent lead` | unattended, on schedule | sonnet | Sizes the team (which lanes, how many) from the plan and decomposes goals into small worker tasks; asks the client questions *through the PM*. |
-| Worker | `--agent worker` | unattended, staggered | haiku | Executes one small task; writes full output to an artifact, returns a short summary. |
-| Karen  | `--agent karen` (verify lane) | unattended, gated | sonnet | Independently verifies that *claimed-done* work is actually functional and matches requirements; writes a verdict, never edits source. |
+| Role   | Runs | Model | Job |
+|--------|------|-------|-----|
+| Worker | unattended, staggered | haiku | Executes the task from one GitHub Issue; writes a summary to `state/worker_output.txt`. |
+| Karen  | unattended, gated | sonnet | Independently verifies that the worker's output actually meets the requirements; writes verdict to `state/verdict.txt`; never edits source. |
 
 ## How it works
 
+- **Tasks are GitHub Issues** labelled `agent-todo`. You create the issues; the dispatcher claims them.
 - **One fixed cron heartbeat** runs `scripts/dispatcher.sh` every 10 minutes. It never changes.
-- **All policy lives in `schedule.json`**, which the PM edits. An LLM never touches crontab.
-- **Each tick does at most ONE thing**: a lead pass (only in its windows, only if the
-  lead-inbox has work, only if the lead isn't paused) **or** one worker lane. Never both.
-- **Workers are paced by a per-lane cooldown.** Four lanes on 10-minute ticks settle at a
-  ~40-minute cadence each — always something running, never simultaneously. (Three lanes
-  gives a true 30-minute cadence; tighten ticks to ~7 min to keep 30 min with four.)
-- **Coordination is file-based** (the "blackboard"): `STATUS.md`, `queue/` (incl. `review/`),
-  `lead-inbox/`, `questions/`, `artifacts/`, `logs/`. Agents read/write files, not each
-  other's context.
-- **Verification is staggered too.** The verifier (karen) runs as one more lane, so it obeys
-  the same ≤1-at-a-time pacing, cooldown, and budget throttle. The lead gates it to phase
-  boundaries (it runs on Sonnet), keeping audits inside the 5-hour window.
-- **Dependencies are deterministic and free.** Sequenced tasks sit in `queue/backlog/` with a
-  `depends_on:` list; each tick the dispatcher promotes any whose dependencies are all in
-  `done/` — a pure file check, no LLM, no extra agent runs, so ordering never breaks the pacing.
+- **All policy lives in `schedule.json`** (no LLM touches crontab).
+- **Each tick does at most ONE thing** — karen verification first if any `agent-review` issue exists,
+  otherwise one worker run. Never concurrent.
+- **Labels carry state** (atomic swap prevents double-dispatch):
+  ```
+  agent-todo    → queued, not yet claimed
+  agent-doing   → dispatcher claimed it (in-flight)
+  agent-review  → worker done; awaiting karen
+  agent-done    → karen passed; issue closed
+  ```
+- **FAILED karen verdict cycles the issue back** to `agent-todo` with a comment explaining
+  what needs to be fixed, so the worker retries on the next eligible tick.
 
 ```
-Client ─chat─▶ PM (haiku)
-                  │ writes
-                  ├─▶ queue/todo/    ← workers pull from here
-                  ├─▶ lead-inbox/    ← lead plans from here (+ relayed answers)
-                  └─◀ questions/     ← lead's questions for the client (PM relays)
-cron ─every 10m─▶ dispatcher.sh ─▶ one worker OR one lead pass
-                                     ├─▶ artifacts/      (full output)
-                                     ├─▶ logs/usage.jsonl (cost per run)
-                                     └─▶ logs/activity.log
+You ─ create GitHub Issues ─▶ (label: agent-todo)
+                                      │
+cron ─every 10m─▶ dispatcher.sh ─────┤ claims oldest agent-todo → agent-doing
+                       │             │ runs worker → posts summary comment → agent-review
+                       │             │ runs karen  → posts verdict comment
+                       │             │   PASSED → agent-done, closes issue
+                       └─────────────┘   FAILED → agent-todo, worker retries
+                  logs/usage.jsonl (cost per run)
+                  state/STATUS.md  (rolling budget meter)
 ```
-
-## Greenfield (from scratch)
-The system runs soup-to-nuts, not just on existing repos. For an empty project:
-0. **Kickoff** — opening the PM on an empty repo triggers a `/plan` intake: ~10 core questions
-   (outcome, MVP, non-goals, happy path, stack, integrations, "done" criteria, guardrails,
-   pace). The PM writes the answers into SPEC.md and sets `schedule.json`.
-1. **Discovery** — the lead refines SPEC.md and raises open questions into `questions/`; the
-   client answers asynchronously via the PM. Only settled slices become build tasks. This
-   front-loads the Sonnet reasoning, then amortizes it across cheap Haiku build work.
-2. **Scaffold** — for an empty repo the lead queues a small scaffold task first (init,
-   structure, a test harness) so there's something real to build on and for karen to verify.
-3. **Build** — the lead decomposes settled slices into tasks with `depends_on`; the dispatcher
-   promotes them as dependencies clear; Haiku workers run on the stagger.
-4. **Verify** — karen audits against SPEC.md; the lead opens fix tasks; loop.
-
-Everything past kickoff is the normal async, staggered, budget-throttled work — the project
-moves at the pace of your answers to spec questions, and never breaks the 5-hour window.
 
 ## Setting it up
 
-Run these steps in the client's project (or a dedicated control directory). Confirm the
-target directory with the client first.
+Run these steps in the client's project (or a dedicated control directory).
+Confirm the target directory with the client first.
 
-1. **Scaffold the working directories** in the project root:
-   ```bash
-   mkdir -p scripts state logs artifacts queue/todo queue/doing queue/done queue/review queue/backlog \
-            lead-inbox/done questions/answered .claude/agents
+1. **Install dependencies**:
+   - `brew install jq`
+   - `brew install gh` then `gh auth login`
+
+2. **Copy the bundled files** from this skill into the project (or run `scripts/setup.sh`):
+   - `scripts/dispatcher.sh`    → `scripts/dispatcher.sh`   (`chmod +x`)
+   - `scripts/budget_check.sh`  → `scripts/budget_check.sh` (`chmod +x`)
+   - `scripts/setup-labels.sh`  → `scripts/setup-labels.sh` (`chmod +x`)
+   - `scripts/setup.sh`         → `scripts/setup.sh`        (`chmod +x`)
+   - `assets/schedule.json`     → `schedule.json`
+   - `assets/STATUS.md`         → `state/STATUS.md`
+   - `assets/settings.json`     → `.claude/settings.json`
+   - `assets/env.example`       → `.env.example`
+   - `assets/agents/worker.md`  → `.claude/agents/worker.md`
+   - `assets/agents/karen.md`   → `.claude/agents/karen.md`
+
+3. **Set the GitHub repo** in `schedule.json`:
+   ```json
+   "github": { "repo": "owner/repo" }
    ```
-2. **Copy the bundled files** from this skill into the project:
-   - `scripts/dispatcher.sh`         → `scripts/dispatcher.sh`  (then `chmod +x`)
-   - `scripts/gh_sync.sh`            → `scripts/gh_sync.sh`  (then `chmod +x`)
-   - `assets/schedule.json`          → `schedule.json`
-   - `assets/STATUS.md`              → `state/STATUS.md`
-   - `assets/SPEC.md`                → `SPEC.md`  (template; the PM fills it at kickoff)
-   - `assets/settings.json`          → `.claude/settings.json`  (merge if one exists)
-   - `assets/env.example`            → `.env.example`
-   - `assets/agents/pm.md`           → `.claude/agents/pm.md`
-   - `assets/agents/lead.md`         → `.claude/agents/lead.md`
-   - `assets/agents/worker.md`       → `.claude/agents/worker.md`
-   - `assets/agents/karen.md`        → `.claude/agents/karen.md`
-3. **Install jq** (the dispatcher needs it): `brew install jq`
-4. **Authenticate cron to the subscription** (not API):
+
+4. **Create the GitHub labels** (run once):
+   ```bash
+   bash scripts/setup-labels.sh
+   ```
+   This creates `agent-todo`, `agent-doing`, `agent-review`, and `agent-done` on the repo.
+
+5. **Authenticate cron to the subscription** (not API):
    ```bash
    claude setup-token
    ```
    Copy `.env.example` to `.env`, paste the token into `CLAUDE_CODE_OAUTH_TOKEN`, and set
-   `PATH` to where `claude` and `jq` live (`which claude ; which jq`).
-5. **Add the heartbeat to cron** (`crontab -e`) with absolute paths:
+   `PATH` to where `claude`, `jq`, and `gh` live (`which claude; which jq; which gh`).
+
+6. **Add the heartbeat to cron** (`crontab -e`) with absolute paths:
    ```
    */10 * * * * /ABS/PATH/scripts/dispatcher.sh >> /ABS/PATH/logs/dispatcher.log 2>&1
    ```
-6. **Test once by hand** before trusting cron: `./scripts/dispatcher.sh`, then check
-   `logs/dispatcher.log` and `logs/usage.jsonl`.
 
-Tell the client the two things most likely to trip them up: cron runs with a bare
-environment (hence `.env` for PATH + token), and headless runs auto-deny permission prompts
-(hence `.claude/settings.json` + `acceptEdits` — widen the allow list to their project's
-commands if a worker stalls).
+7. **Test once by hand** before trusting cron:
+   ```bash
+   ./scripts/dispatcher.sh --force-worker
+   ```
+   Then check `logs/dispatcher.log` and `logs/usage.jsonl`.
+
+Tell the client the two things most likely to trip them up: cron runs with a bare environment
+(hence `.env` for PATH + token), and headless runs auto-deny permission prompts (hence
+`.claude/settings.json` + `acceptEdits` — widen the allow list to their project's commands
+if a worker stalls).
 
 ## Operating it (what to tell the client)
 
-Open the PM whenever you want to check in or hand off work: `claude --agent pm`.
-
-- **Kick off a project with a plan.** For a new project, enter plan mode first with `/plan`
-  (or Shift+Tab twice) and shape the plan with the PM before any work is queued. On
-  approval, the PM seeds the lead-inbox and STATUS.md from the plan.
-- **Check status.** Ask "what's going on?" — the PM reports from STATUS.md. For quick,
-  ephemeral pokes (including "how many agents are running?"), use `/btw`: it sees the full
-  context but the answer isn't added to history, so it won't bloat the session or inflate
-  later turns. By design, at most one background agent runs at a time.
-- **Hand off ideas.** The PM writes worker tasks to `queue/todo/` or planning requests to
-  `lead-inbox/`. It never interrupts the lead — it only queues.
-- **Adjust the schedule.** Tell the PM in plain words ("only work 9–5", "pause the refactor
-  lane", "go faster this afternoon", "don't run the lead while I'm out") and it edits
-  `schedule.json`.
-- **Answer the lead's questions.** When the lead needs a decision, the PM surfaces it; your
-  answer is relayed back into the lead-inbox for the lead's next run.
-- **Check what's real.** Ask the PM "what's actually done?" — it reports claimed vs verified
-  and won't overstate. Ask it to verify a phase and it queues the verifier (karen) via the
-  lead; results arrive on the normal stagger.
-- **Work directly, occasionally.** To pair with the lead or a worker hands-on, the PM pauses
-  that agent (so cron won't run it at the same time), gives you the command
-  (`claude --agent lead` / `claude --agent worker`), and un-pauses when you're done.
-
-Check spend anytime with `/usage` (live 5-hour and weekly consumption + reset times).
-
-## GitHub integration (optional edge)
-Off by default. Set `github.enabled: true` and a `repo` in schedule.json and GitHub becomes the
-human-facing edge, while all agent-to-agent coordination stays in local files:
-- **Issues in** — open or label an issue with `inbox_label`; a deterministic sync (run at lead
-  windows, token-free) drops it into `lead-inbox/` for the lead to plan.
-- **Questions/answers** — the lead's questions post as issue comments; your replies are pulled
-  back automatically, so you can answer from anywhere, including the GitHub mobile app.
-- **PRs out** — karen-verified work is committed to a `work_branch` and opened as a PR for you
-  to review and merge. The agents never push or merge `main`.
-- **Stays local** — the queue, the dependency DAG, and inter-agent handoffs never touch the
-  API, so the token budget and per-tick reliability are untouched.
-
-To enable: set `github.enabled`, `repo`, and `inbox_label`; authenticate gh for cron
-(`gh auth login`, or `GH_TOKEN` in `.env`); and — important — turn on **branch protection for
-`main`** in the repo so an approved PR is the only path to merge. That protection is the real
-guardrail; the agents are instructed to stay on the work branch, but branch protection enforces it.
+- **Queue work** — create a GitHub Issue on the configured repo and add the `agent-todo` label.
+  The dispatcher picks it up on the next tick (or immediately with `--force-worker`).
+- **Check status** — watch the issue labels and comments on GitHub. The dispatcher posts the
+  worker's summary and karen's verdict as comments before changing labels.
+- **Rolling budget** — `state/STATUS.md` shows a 5h rolling spend bar (updated every tick) when
+  `telemetry.show_rolling_budget_in_status` is true.
+- **Force a run now** — `scripts/dispatcher.sh --force-worker` (or `--force-worker <N>` for a
+  specific issue). Bypasses `active_hours` and the soft budget throttle; still respects `paused`.
+- **Pause everything** — set `"paused": true` in `schedule.json`.
+- **Adjust hours** — set `active_hours.start` and `active_hours.end` (24h clock) in `schedule.json`.
+- **Cap spend** — set `soft_budget_usd_per_5h` in `schedule.json` to skip ticks once the
+  trailing 5-hour window hits the limit. `0` disables.
 
 ## schedule.json reference
 
 | Field | Meaning |
 |-------|---------|
 | `paused` | `true` halts all runs immediately. |
-| `lead_paused` | `true` stops lead passes (e.g., while the client works with the lead directly). |
-| `paused_lanes` | Lanes to skip, e.g. `["refactor"]` (e.g., while pairing with that worker). |
-| `tick_minutes` | Documentation only — the real cadence is the crontab line. |
-| `lanes` | The worker lanes (categories), sized by the **lead** from the plan. Tasks match by their `lane:` field. |
-| `lane_cooldown_min` | A lane won't rerun until this many minutes have passed. |
-| `lead_windows` | Minutes-of-hour when the lead may run, e.g. `[0, 30]`. |
-| `worker_model` / `lead_model` | Default models (`haiku`, `sonnet`, `opus`, `fable`). A task's own `model:` overrides for workers. |
-| `karen_model` | Model for the verifier (default `sonnet` — it must actually reason about code). |
-| `require_verification` | `true` routes finished worker tasks to `queue/review/`; they reach `done/` only after karen passes them (stricter, pricier). Default `false` = verify in batches at phase ends. |
-| `github.*` | Optional GitHub edge: `enabled`, `repo` (owner/name), `inbox_label` (issues with this label become work), `base_branch`, `work_branch`. Default off. |
+| `worker_model` | Model for workers (default `haiku`). Accepts tier aliases (`haiku`, `sonnet`, `opus`, `fable`) or pinned model IDs. |
+| `karen_model` | Model for the verifier (default `sonnet` — needs reasoning). |
 | `max_turns` | Hard cap on agentic turns per run. |
 | `soft_budget_usd_per_5h` | Heuristic self-throttle: skip ticks once trailing-5h spend hits this. `0` disables. |
+| `telemetry.show_rolling_budget_in_status` | `true` updates `state/STATUS.md` with a spend bar on every tick. |
 | `active_hours` | Only run between `start` and `end` (24-hour clock). |
+| `github.repo` | Required. GitHub repo as `owner/repo`. |
+| `github.base_branch` | The branch agents must never push to directly (default `main`). |
+| `github.work_branch` | Branch for committing verified work before opening PRs (default `agents/work`). |
 
 ## Token-saving choices baked in
 
-- Workers return summaries only; full output goes to `artifacts/`. This keeps the PM and
-  lead contexts tiny — the biggest lever, since context is re-billed on every turn.
-- Cheap models per role (Haiku workers + PM, Sonnet lead); bump only where judgment matters.
+- Workers write summaries to `state/worker_output.txt` (≤40 lines) posted as comments;
+  full output stays in the repo. This keeps agent contexts tiny — the biggest lever.
+- Cheap models per role (Haiku workers, Sonnet verifier only where judgment matters).
 - `maxTurns` + `effort: low` cap cost per worker run.
-- STATUS.md stays short; history lives in `logs/`, so PM reads stay cheap.
-- Staggering + cooldown pace the rolling 5-hour window instead of bursting into a lockout.
-- Verification (karen, Sonnet) is gated to phase boundaries, not run on every task, so the
-  audit layer rides the same stagger and throttle without blowing the budget.
+- `state/STATUS.md` stays short; history lives in `logs/`, so reads stay cheap.
+- Staggering + `active_hours` + `soft_budget` pace the rolling 5-hour window instead of
+  bursting into a lockout.
+- Verification (karen, Sonnet) runs only when a task finishes — it's gated on the issue
+  label state, not on a separate schedule, so it obeys the same ≤1-at-a-time pacing.
 
 ## Honest caveats
 
 - **Weekly cap.** Pacing only smooths the 5-hour window. Near the weekly ceiling, the only
-  fix is genuinely fewer/cheaper tasks — keep tasks small and Haiku-only.
+  fix is genuinely fewer/cheaper tasks — keep issues small and Haiku-only.
 - **Headless permissions.** Background runs auto-deny prompts. `settings.json` pre-allows
   common safe tools and workers run in `acceptEdits`. If a worker stalls, widen the allow
   list. As a last resort in a sandboxed dir, add `--dangerously-skip-permissions` to the
@@ -197,11 +157,13 @@ guardrail; the agents are instructed to stay on the work branch, but branch prot
 
 ## Bundled files
 
-- `scripts/dispatcher.sh` — the cron heartbeat (portable bash; macOS 3.2 + Linux).
-- `scripts/gh_sync.sh` — the deterministic GitHub bridge (issues/comments in, questions out).
-- `assets/schedule.json` — policy template (the PM edits the deployed copy).
-- `assets/SPEC.md` — the living-spec template the PM fills from the kickoff intake.
-- `assets/STATUS.md` — the status board template.
-- `assets/settings.json` — permission allowlist template for `.claude/settings.json`.
-- `assets/env.example` — cron environment template.
-- `assets/agents/{pm,lead,worker,karen}.md` — the four agent definitions to install into `.claude/agents/`.
+- `scripts/dispatcher.sh`   — the cron heartbeat (GitHub Issues-backed, portable bash 3.2).
+- `scripts/budget_check.sh` — token-free rolling-budget meter for `state/STATUS.md`.
+- `scripts/setup-labels.sh` — one-time init: creates `state/`/`logs/` and GitHub labels.
+- `scripts/setup.sh`        — interactive installer (wraps all setup steps).
+- `assets/schedule.json`    — policy template (edit the deployed copy).
+- `assets/STATUS.md`        — status board template.
+- `assets/settings.json`    — permission allowlist for `.claude/settings.json`.
+- `assets/env.example`      — cron environment template.
+- `assets/agents/worker.md` — worker agent definition.
+- `assets/agents/karen.md`  — karen (verifier) agent definition.
