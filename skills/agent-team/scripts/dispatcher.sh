@@ -78,11 +78,18 @@ karen_model=$( jq -r '.karen_model            // "sonnet"' "$SCHEDULE")
 require_verify=$(jq -r '.require_verification  // false'   "$SCHEDULE")
 gh_enabled=$(  jq -r '.github.enabled         // false'    "$SCHEDULE")
 max_turns=$(   jq -r '.max_turns              // 25'       "$SCHEDULE")
+lead_max_turns=$(jq -r '.lead_max_turns       // 50'      "$SCHEDULE")
 soft_budget=$( jq -r '.soft_budget_usd_per_5h // 0'        "$SCHEDULE")
 auto_accept=$( jq -r '.auto_accept_low_risk   // false'    "$SCHEDULE")
 pd_enabled=$(  jq -r '.pre_dispatch.enabled   // false'    "$SCHEDULE")
 pd_timeout=$(  jq -r '.pre_dispatch.timeout_sec // 10'     "$SCHEDULE")
 pd_maxbytes=$( jq -r '.pre_dispatch.max_bytes // 4096'     "$SCHEDULE")
+
+# ---- refresh the rolling-budget summary in STATUS.md (token-free, gated) ----
+# Runs before the throttle check so a throttled tick still updates the meter.
+if [ "$(jq -r '.telemetry.show_rolling_budget_in_status // false' "$SCHEDULE")" = "true" ]; then
+  bash "$SCRIPT_DIR/budget_check.sh" || true
+fi
 
 # ---- soft self-throttle: heuristic cap on spend in the trailing 5h window ----
 # A proxy for your subscription's rolling 5-hour limit. Set to 0 to disable.
@@ -95,22 +102,47 @@ if [ -f "$USAGE" ] && [ "$soft_budget" != "0" ]; then
 fi
 
 # ---- helper: run a claude agent headless, log cost + a snippet of its result ----
-run_agent() {  # $1 = agent name, $2 = model, $3 = prompt file
-  local agent="$1" model="$2" pf="$3" out cost result_text
-  if ! out=$(claude -p "$(cat "$pf")" \
-               --agent "$agent" \
-               --model "$model" \
-               --max-turns "$max_turns" \
-               --output-format json 2>>"$ROOT/logs/dispatcher.log"); then
-    log "ERROR: claude run failed for agent=$agent (see logs/dispatcher.log)"
+run_agent() {  # $1 = agent name, $2 = model, $3 = prompt file, [$4 = max-turns override]
+  local agent="$1" model="$2" pf="$3" mt="${4:-$max_turns}" out rc cost subtype result_text
+  # Capture stdout regardless of exit code. A --max-turns cutoff exits non-zero but still
+  # prints a JSON result (subtype "error_max_turns") with the real cost/usage, and the
+  # agent's edits already landed (it runs in acceptEdits).
+  # Feed the prompt on STDIN (not as an argument): worker/karen task files start with "---"
+  # YAML frontmatter, and claude's arg parser treats a leading "---" as an unknown option
+  # ("error: unknown option '---'"), so passing the file as an argument fails every worker run.
+  out=$(claude -p \
+          --agent "$agent" \
+          --model "$model" \
+          --max-turns "$mt" \
+          --output-format json < "$pf" 2>>"$ROOT/logs/dispatcher.log") && rc=0 || rc=$?
+
+  # Always record cost/usage when we got parseable JSON, so the soft budget can't be
+  # silently bypassed by the most expensive runs (the ones that hit the cap).
+  if echo "$out" | jq -e . >/dev/null 2>&1; then
+    cost=$(echo "$out" | jq -r '.total_cost_usd // 0')
+    echo "$out" | jq -c --arg a "$agent" --argjson ts "$now_epoch" \
+        '{ts:$ts, agent:$a, cost:(.total_cost_usd // 0), usage:(.usage // {})}' >> "$USAGE"
+    subtype=$(echo "$out" | jq -r '.subtype // ""')
+    # surface the agent's summary / any blocker so the lead + PM can see it
+    result_text=$(echo "$out" | jq -r '.result // .text // ""' 2>/dev/null | tr '\n' ' ' | cut -c1-240 || true)
+  else
+    cost=0; subtype=""; result_text=""
+  fi
+
+  if [ "$rc" -ne 0 ]; then
+    # A turn-budget cutoff is not a failure: edits landed and cost is logged. Treat it as a
+    # completed pass (return 0) so deterministic housekeeping runs and the task isn't retried
+    # in a loop. Anything else is a real error -> caller decides whether to retry.
+    if [ "$subtype" = "error_max_turns" ]; then
+      log "ran $agent ($model) cost=\$$cost — hit max-turns ($mt); edits kept, treating as complete"
+      [ -n "$result_text" ] && log "  > $agent: $result_text"
+      return 0
+    fi
+    log "ERROR: claude run failed for agent=$agent rc=$rc (see logs/dispatcher.log)"
     return 1
   fi
-  cost=$(echo "$out" | jq -r '.total_cost_usd // 0')
-  echo "$out" | jq -c --arg a "$agent" --argjson ts "$now_epoch" \
-      '{ts:$ts, agent:$a, cost:(.total_cost_usd // 0), usage:(.usage // {})}' >> "$USAGE"
+
   log "ran $agent ($model) cost=\$$cost"
-  # surface the agent's summary / any blocker so the lead + PM can see it
-  result_text=$(echo "$out" | jq -r '.result // .text // ""' 2>/dev/null | tr '\n' ' ' | cut -c1-240 || true)
   [ -n "$result_text" ] && log "  > $agent: $result_text"
   return 0
 }
@@ -189,6 +221,16 @@ inbox_count=$(find "$INBOX" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d
 review_count=$(find "$REVIEW" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
 
 if [ "$is_window" = "true" ] && [ "$lead_paused" != "true" ] && { [ "$inbox_count" -gt 0 ] || [ "$review_count" -gt 0 ]; }; then
+  # Snapshot exactly the inbox items we feed to the lead so the dispatcher can archive them
+  # itself after the run — deterministically, not relying on the LLM to do file housekeeping
+  # within its turn budget. (A max-turns cutoff would otherwise leave them to be reprocessed
+  # into duplicate tasks next window.)
+  fed_items=()
+  for f in "$INBOX"/*.md; do
+    [ -e "$f" ] || continue
+    fed_items+=("$f")
+  done
+
   tmp=$(mktemp)
   {
     echo "You are the lead. Handle the work below."
@@ -197,7 +239,8 @@ if [ "$is_window" = "true" ] && [ "$lead_paused" != "true" ] && { [ "$inbox_coun
     echo "task files in queue/todo/ (use the task template). Items titled 'answer:' are the"
     echo "client's answers to your questions -> use them to unblock tasks. A 'verify request'"
     echo "item -> queue a karen verification task (agent: karen, model: sonnet) in the verify"
-    echo "lane for the work named. Move each handled item to lead-inbox/done/."
+    echo "lane for the work named. The dispatcher archives these inbox items for you after this"
+    echo "pass — do NOT spend turns moving inbox files; put your turns into planning."
     echo
     echo "REVIEW ($review_count task(s) in queue/review/ awaiting verification — only used when"
     echo "require_verification is on): for each not yet judged by karen, queue a karen verify"
@@ -209,15 +252,22 @@ if [ "$is_window" = "true" ] && [ "$lead_paused" != "true" ] && { [ "$inbox_coun
     echo "exactly, no over-engineering). If something needs the client to decide, write a question"
     echo "into questions/ rather than guessing. Finally, update state/STATUS.md (claimed vs verified)."
     echo
-    for f in "$INBOX"/*.md; do
-      [ -e "$f" ] || continue
+    for f in "${fed_items[@]+"${fed_items[@]}"}"; do
       echo "----- inbox item: $(basename "$f") -----"
       cat "$f"; echo
     done
   } > "$tmp"
   log "lead pass: inbox=$inbox_count review=$review_count"
-  run_agent lead "$lead_model" "$tmp" || true
+  if run_agent lead "$lead_model" "$tmp" "$lead_max_turns"; then lead_ok=1; else lead_ok=0; fi
   rm -f "$tmp"
+  # Deterministic housekeeping: archive exactly the items we fed (idempotent — the lead may
+  # have moved some itself; skip those). Only on a successful/max-turns pass, so a genuine
+  # launch failure leaves the items for the next window rather than dropping unprocessed work.
+  if [ "$lead_ok" = "1" ]; then
+    for f in "${fed_items[@]+"${fed_items[@]}"}"; do
+      [ -e "$f" ] && mv "$f" "$INBOX/done/" 2>/dev/null || true
+    done
+  fi
   exit 0
 fi
 

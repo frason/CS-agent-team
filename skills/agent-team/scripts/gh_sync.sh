@@ -6,9 +6,11 @@
 # CLI and file ops — NO model, no tokens. It moves the *human-facing* messages; agent-to-agent
 # coordination stays in local files, and PR creation is left to the lead (it writes the summary).
 #
-#   Inbound : labeled open issues          -> lead-inbox/gh-issue-N.md
-#             new client comments on those  -> lead-inbox/answer-N-*.md
-#   Outbound: questions/*.md (with issue:N) -> a comment on issue N, then moved to questions/posted/
+#   Inbound : labeled open issues            -> lead-inbox/gh-issue-N.md
+#             new client comments on those    -> lead-inbox/answer-N-*.md
+#   Outbound: questions/*.md with `issue: N`  -> a comment on issue N
+#             questions/*.md with no issue    -> a NEW labeled issue is created and tracked
+#             (both then move to questions/posted/)
 #
 # Resilient by design: any missing tool / auth / network issue just logs and exits 0, so it can
 # never break a dispatcher tick.
@@ -56,11 +58,34 @@ gh issue list "${GHR[@]}" --label "$LABEL" --state open --json number,title \
   log "pulled issue #$num -> lead-inbox"
 done || true
 
-# 2) Outbound — post any unposted question that names an issue, then archive it.
+# 2) Outbound — post unposted questions, then archive them. A question that already names an
+#    issue is added as a comment; a lead-originated question (no `issue:` line) gets a NEW issue
+#    created for it so the client actually sees it.
 for qf in "$Q"/*.md; do
   [ -e "$qf" ] || continue
   iss=$(grep -i '^issue:' "$qf" | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '[:space:]' 2>/dev/null || true)
-  [ -z "${iss:-}" ] && continue
+
+  if [ -z "${iss:-}" ]; then
+    # No issue yet -> create one. Title = first markdown heading (fallback to the filename).
+    title=$(grep -m1 -E '^#{1,6}[[:space:]]+' "$qf" 2>/dev/null | sed -E 's/^#{1,6}[[:space:]]+//' | cut -c1-120)
+    [ -z "${title:-}" ] && title="agent-team question: $(basename "$qf" .md)"
+    # Try with the inbox label; retry without it if the label doesn't exist in the repo.
+    iss=$(gh issue create "${GHR[@]}" --title "$title" --body-file "$qf" --label "$LABEL" 2>/dev/null \
+            | grep -oE '[0-9]+$' | tail -1 || true)
+    [ -z "${iss:-}" ] && iss=$(gh issue create "${GHR[@]}" --title "$title" --body-file "$qf" 2>/dev/null \
+            | grep -oE '[0-9]+$' | tail -1 || true)
+    if [ -z "${iss:-}" ]; then
+      log "failed to create issue for question $(basename "$qf")"
+      continue
+    fi
+    # Record the number in the file and mark it 'seen' so step 1 won't re-ingest it as inbound
+    # work and step 3 will pull the client's replies.
+    { echo "issue: $iss"; cat "$qf"; } > "$qf.tmp" && mv "$qf.tmp" "$qf"
+    grep -qx "$iss" "$SEEN" || echo "$iss" >> "$SEEN"
+    mv "$qf" "$Q/posted/" && log "created issue #$iss for question $(basename "$qf")"
+    continue
+  fi
+
   if gh issue comment "$iss" "${GHR[@]}" --body-file "$qf" >/dev/null 2>&1; then
     mv "$qf" "$Q/posted/" && log "posted question -> issue #$iss"
   else
