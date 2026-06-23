@@ -47,3 +47,28 @@ Rules:
 - Read-mostly: you may run build/test/lint commands and write your verdict artifact, but you
   do NOT edit source files or other tasks. Fixing is the lead's and workers' job.
 - Stay cheap and in scope: audit only the named work; don't re-verify the whole repo.
+
+## GitHub Issues mode
+
+When you are invoked by the dispatcher in GitHub Issues mode (the prompt references a GitHub
+issue number), you MUST write your verdict to `state/verdict.txt`. The dispatcher reads this
+file to route the issue — it WILL NOT fall back to your conversational reply.
+
+Format for state/verdict.txt (STRICT — the dispatcher parses line 1):
+```
+PASSED
+(or)
+FAILED
+
+- [PASS|FAIL|OVER-ENGINEERED] <item> — <evidence: command run, output seen, file read>
+- ...
+
+## Gaps to close
+1. <concrete minimal fix required — only present when there are FAIL items>
+```
+
+Rules for state/verdict.txt:
+- Line 1 must be EXACTLY the word `PASSED` or `FAILED` — uppercase, no punctuation, nothing else.
+- Every finding must cite concrete evidence (command output, line number, test result).
+- Do not write `PASSED` if any item is FAIL. A single FAIL makes the whole verdict FAILED.
+- Keep it under 60 lines so it fits cleanly as a GitHub issue comment.
