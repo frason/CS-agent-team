@@ -12,6 +12,13 @@
   "require_verification": false,
   "max_turns": 25,
   "soft_budget_usd_per_5h": 0,
+  "auto_accept_low_risk": false,
+  "auto_accept_low_risk_lanes": ["docs"],
+  "pre_dispatch": {
+    "enabled": false,
+    "timeout_sec": 10,
+    "max_bytes": 4096
+  },
   "active_hours": { "start": 8, "end": 20 },
   "github": {
     "enabled": false,

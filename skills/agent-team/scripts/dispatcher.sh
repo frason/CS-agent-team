@@ -79,6 +79,10 @@ require_verify=$(jq -r '.require_verification  // false'   "$SCHEDULE")
 gh_enabled=$(  jq -r '.github.enabled         // false'    "$SCHEDULE")
 max_turns=$(   jq -r '.max_turns              // 25'       "$SCHEDULE")
 soft_budget=$( jq -r '.soft_budget_usd_per_5h // 0'        "$SCHEDULE")
+auto_accept=$( jq -r '.auto_accept_low_risk   // false'    "$SCHEDULE")
+pd_enabled=$(  jq -r '.pre_dispatch.enabled   // false'    "$SCHEDULE")
+pd_timeout=$(  jq -r '.pre_dispatch.timeout_sec // 10'     "$SCHEDULE")
+pd_maxbytes=$( jq -r '.pre_dispatch.max_bytes // 4096'     "$SCHEDULE")
 
 # ---- soft self-throttle: heuristic cap on spend in the trailing 5h window ----
 # A proxy for your subscription's rolling 5-hour limit. Set to 0 to disable.
@@ -109,6 +113,44 @@ run_agent() {  # $1 = agent name, $2 = model, $3 = prompt file
   result_text=$(echo "$out" | jq -r '.result // .text // ""' 2>/dev/null | tr '\n' ' ' | cut -c1-240 || true)
   [ -n "$result_text" ] && log "  > $agent: $result_text"
   return 0
+}
+
+# ---- portable timeout wrapper (coreutils `timeout`/`gtimeout` if present, else none) ----
+run_limited() {  # $1 = seconds, rest = command + args
+  local s="$1"; shift
+  if   command -v timeout  >/dev/null 2>&1; then timeout  "$s" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$s" "$@"
+  else "$@"; fi
+}
+
+# ---- speculative pre-dispatch: run a task's read-only `pre_dispatch_cmd:` and inject its ----
+# ---- output into the task file, so the worker boots with targeted context (token-free). ----
+# Safety: this executes an LLM-authored shell string unattended, so it is opt-in and tightly
+# constrained — no shell metacharacters, leading command must be on a read-only allowlist,
+# bounded by a timeout and an output cap. It NEVER runs anything that can mutate state.
+pre_dispatch() {  # $1 = claimed task file
+  local f="$1" cmd first second out
+  cmd=$(grep -i '^pre_dispatch_cmd:' "$f" | head -1 | sed 's/^[^:]*:[[:space:]]*//' || true)
+  [ -z "$cmd" ] && return 0
+  # Reject anything that could chain, redirect, substitute, or span lines.
+  case "$cmd" in
+    *';'*|*'|'*|*'&'*|*'>'*|*'<'*|*'`'*|*'$('*|*'${'*|*$'\n'*)
+      log "  pre-dispatch: rejected (shell metacharacters): $cmd"; return 0 ;;
+  esac
+  first=$(printf '%s' "$cmd"  | awk '{print $1}')
+  second=$(printf '%s' "$cmd" | awk '{print $2}')
+  case "$first" in
+    grep|rg|find|ls|tree|cat|head|wc) : ;;
+    sed) [ "$second" = "-n" ] || { log "  pre-dispatch: sed allowed only with -n: $cmd"; return 0; } ;;
+    git) case "$second" in ls-files|grep) : ;; *) log "  pre-dispatch: git allowed only for ls-files/grep: $cmd"; return 0 ;; esac ;;
+    *)   log "  pre-dispatch: '$first' not in read-only allowlist: $cmd"; return 0 ;;
+  esac
+  # No metacharacters remain, so unquoted word-splitting is safe (globs expand against ROOT).
+  out=$(run_limited "$pd_timeout" $cmd 2>/dev/null | head -c "$pd_maxbytes" || true)
+  if [ -n "$out" ]; then
+    { echo; echo "## Pre-dispatch context (\`$cmd\`)"; echo '```'; printf '%s\n' "$out"; echo '```'; } >> "$f"
+    log "  pre-dispatch: injected $(printf '%s' "$out" | wc -c | tr -d ' ') bytes from: $cmd"
+  fi
 }
 
 # ---- promote backlog tasks whose dependencies are all complete (deterministic, no LLM) ----
@@ -202,6 +244,9 @@ fi
 claimed="$DOING/$(basename "$best_task")"
 mv "$best_task" "$claimed"
 
+# speculative pre-dispatch: inject targeted context before the worker boots (token-free, gated)
+[ "$pd_enabled" = "true" ] && pre_dispatch "$claimed"
+
 # which agent runs this task (default "worker"; verify tasks set "agent: karen")
 task_agent=$(grep -i '^agent:' "$claimed" | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '[:space:]' || true)
 [ -z "$task_agent" ] && task_agent="worker"
@@ -221,7 +266,20 @@ if run_agent "$task_agent" "$task_model" "$claimed"; then
   # finished worker output awaits verification when require_verification is on;
   # karen audits and everything else go straight to done.
   if [ "$require_verify" = "true" ] && [ "$task_agent" = "worker" ]; then
-    mv "$claimed" "$REVIEW/"
+    # auto-accept: mechanical lane-based check — skip karen for provably read-only lanes
+    # (docs). Risk field on the task is checked too, but lane membership is the real gate
+    # so a mislabeled "risk: low" on functional code can't silently bypass verification.
+    task_risk=$(grep -i '^risk:' "$claimed" | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '[:space:]' || true)
+    auto_accept_lanes=$(jq -r '(.auto_accept_low_risk_lanes // ["docs"]) | join(" ")' "$SCHEDULE")
+    lane_is_safe=false
+    for _l in $auto_accept_lanes; do
+      [ "$_l" = "$best_lane" ] && { lane_is_safe=true; break; }
+    done
+    if [ "$auto_accept" = "true" ] && [ "$task_risk" = "low" ] && [ "$lane_is_safe" = "true" ]; then
+      mv "$claimed" "$DONE/" && log "auto-accepted (risk=low, lane=$best_lane)"
+    else
+      mv "$claimed" "$REVIEW/"
+    fi
   else
     mv "$claimed" "$DONE/"
   fi
