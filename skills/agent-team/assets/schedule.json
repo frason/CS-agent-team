@@ -1,15 +1,7 @@
 {
   "paused": false,
-  "lead_paused": false,
-  "paused_lanes": [],
-  "tick_minutes": 10,
-  "lanes": ["docs", "tests", "refactor", "research", "verify"],
-  "lane_cooldown_min": 30,
-  "lead_windows": [0, 30],
   "worker_model": "haiku",
-  "lead_model": "sonnet",
   "karen_model": "sonnet",
-  "require_verification": false,
   "max_turns": 25,
   "lead_max_turns": 50,
   "soft_budget_usd_per_5h": 0,
@@ -24,9 +16,7 @@
   },
   "active_hours": { "start": 8, "end": 20 },
   "github": {
-    "enabled": false,
     "repo": "",
-    "inbox_label": "agent-team",
     "base_branch": "main",
     "work_branch": "agents/work"
   }

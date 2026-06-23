@@ -30,3 +30,27 @@ Rules:
 - Never touch schedule.json, other lanes' tasks, or files outside this project.
 - Your output may be independently audited by the verifier (karen) against the requirements,
   so make it genuinely functional — not just plausible-looking.
+
+## GitHub Issues mode
+
+When you are invoked by the dispatcher in GitHub Issues mode (the prompt references a GitHub
+issue number), you MUST write your completion summary to `state/worker_output.txt` in addition
+to any artifact you create. The dispatcher reads this file and posts it as an issue comment;
+karen reads it as part of her audit.
+
+Format for state/worker_output.txt:
+```
+## Summary
+<1–2 sentence description of what was accomplished>
+
+## Changes
+- <file or action 1>
+- <file or action 2>
+...
+
+## Caveats / follow-up
+<anything that needs the lead's or client's attention; "none" if clean>
+```
+
+Keep it under 40 lines. Do NOT paste large code blocks — reference file paths instead.
+If the task was blocked or ambiguous, start the summary with `## BLOCKED` and explain why.
