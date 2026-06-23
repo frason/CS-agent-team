@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
 #
-# dispatcher.sh — GitHub Issues-backed cron heartbeat for the worker / karen agent team.
+# dispatcher.sh — GitHub Issues-backed cron heartbeat for the agent team.
 #
 # Task state is managed via GitHub Issue labels:
 #   agent-todo    → queued, not yet claimed
 #   agent-doing   → dispatcher claimed it (prevents double-dispatch)
 #   agent-review  → worker done; awaiting karen verification
 #   agent-done    → karen passed; issue closed
+#   agent-backlog → sequenced task waiting on dependencies (created by lead)
 #
 # Add ONE line to your crontab (absolute paths required):
-#   */10 * * * * /ABS/PATH/<project>/scripts/dispatcher.sh >> /ABS/PATH/<project>/logs/dispatcher.log 2>&1
+#   */10 * * * * /ABS/PATH/scripts/dispatcher.sh >> /ABS/PATH/logs/dispatcher.log 2>&1
 #
-# Each tick does AT MOST ONE thing:
-#   1. Run karen on the oldest agent-review issue  (always checked first)
-#   2. OR run a worker on the oldest agent-todo issue
+# Each tick does AT MOST ONE thing (priority order):
+#   1. LEAD pass  — at lead_windows minutes or --force-lead
+#   2. KAREN pass — oldest agent-review issue (always before new work)
+#   3. WORKER run — oldest agent-todo issue
 #
 # Manual override flags (bypass active_hours + soft budget; still respect paused):
-#   dispatcher.sh --force-worker               run on the oldest agent-todo issue right now
-#   dispatcher.sh --force-worker <issue-num>   run on a specific issue right now
+#   dispatcher.sh --force-lead                  run the lead agent right now
+#   dispatcher.sh --force-worker               run on the oldest agent-todo issue
+#   dispatcher.sh --force-worker <issue-num>   run on a specific issue
 #
 # Portable across macOS (bash 3.2, BSD date/grep) and Linux.
 
@@ -31,10 +34,12 @@ cd "$ROOT"
 if [ -f "$ROOT/.env" ]; then set -a; . "$ROOT/.env"; set +a; fi
 
 # ---- parse manual force flags ----
-# force_issue: empty = normal flow | "next" = oldest todo | "<N>" = specific issue number
+force_lead=false
 force_issue=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --force-lead)
+      force_lead=true; shift ;;
     --force-worker)
       if [ -n "${2:-}" ] && printf '%s' "${2:-}" | grep -qE '^[0-9]+$'; then
         force_issue="$2"; shift 2
@@ -43,7 +48,7 @@ while [ $# -gt 0 ]; do
       fi ;;
     *)
       echo "$(date +%Y-%m-%dT%H:%M:%S) unknown flag: $1"
-      echo "usage: dispatcher.sh [--force-worker [<issue-number>]]"
+      echo "usage: dispatcher.sh [--force-lead] [--force-worker [<issue-number>]]"
       exit 1 ;;
   esac
 done
@@ -54,8 +59,9 @@ STATE="$ROOT/state"
 USAGE="$ROOT/logs/usage.jsonl"
 ACTIVITY="$ROOT/logs/activity.log"
 LOCKDIR="$ROOT/.dispatcher.lock.d"
+INBOX="$ROOT/lead-inbox"
 
-mkdir -p "$STATE" "$ROOT/logs"
+mkdir -p "$STATE" "$ROOT/logs" "$INBOX/done"
 
 TS()  { date +%Y-%m-%dT%H:%M:%S; }
 log() { echo "$(TS) $*" | tee -a "$ACTIVITY"; }
@@ -85,10 +91,14 @@ REPO=$(jq -r '.github.repo // ""' "$SCHEDULE")
 
 now_epoch=$(date +%s)
 hour=$(( 10#$(date +%H) ))
-max_turns=$(   jq -r '.max_turns              // 25'      "$SCHEDULE")
-worker_model=$(jq -r '.worker_model           // "haiku"' "$SCHEDULE")
-karen_model=$( jq -r '.karen_model            // "sonnet"' "$SCHEDULE")
-soft_budget=$( jq -r '.soft_budget_usd_per_5h // 0'       "$SCHEDULE")
+minute=$(( 10#$(date +%M) ))
+max_turns=$(     jq -r '.max_turns               // 25'      "$SCHEDULE")
+worker_model=$(  jq -r '.worker_model            // "haiku"' "$SCHEDULE")
+karen_model=$(   jq -r '.karen_model             // "sonnet"' "$SCHEDULE")
+lead_model=$(    jq -r '.lead_model              // "sonnet"' "$SCHEDULE")
+lead_max_turns=$(jq -r '.lead_max_turns          // 50'      "$SCHEDULE")
+lead_paused=$(   jq -r '.lead_paused             // false'   "$SCHEDULE")
+soft_budget=$(   jq -r '.soft_budget_usd_per_5h  // 0'       "$SCHEDULE")
 
 # ---- refresh the rolling-budget summary in STATUS.md (token-free, gated) ----
 # Runs before the throttle check so throttled ticks still update the meter.
@@ -96,8 +106,8 @@ if [ "$(jq -r '.telemetry.show_rolling_budget_in_status // false' "$SCHEDULE")" 
   bash "$SCRIPT_DIR/budget_check.sh" || true
 fi
 
-# ---- active_hours (skipped for --force-worker) ----
-if [ -z "$force_issue" ]; then
+# ---- active_hours (skipped for any --force flag) ----
+if [ -z "$force_issue" ] && [ "$force_lead" != "true" ]; then
   ah_start=$(jq -r '.active_hours.start // 0'  "$SCHEDULE")
   ah_end=$(  jq -r '.active_hours.end   // 24' "$SCHEDULE")
   if (( hour < ah_start || hour >= ah_end )); then
@@ -105,8 +115,8 @@ if [ -z "$force_issue" ]; then
   fi
 fi
 
-# ---- soft budget throttle (skipped for --force-worker) ----
-if [ -f "$USAGE" ] && [ "$soft_budget" != "0" ] && [ -z "$force_issue" ]; then
+# ---- soft budget throttle (skipped for any --force flag) ----
+if [ -f "$USAGE" ] && [ "$soft_budget" != "0" ] && [ -z "$force_issue" ] && [ "$force_lead" != "true" ]; then
   cutoff=$(( now_epoch - 5*3600 ))
   spent=$(jq -s --argjson c "$cutoff" \
     '[.[] | select(.ts >= $c) | .cost] | add // 0' "$USAGE" 2>/dev/null || echo 0)
@@ -125,15 +135,15 @@ fi
 trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT INT TERM
 
 # ---- helper: run a claude agent headless, log cost ----
-# Feeds the prompt via stdin (not -p arg): task files start with YAML "---" frontmatter
-# which claude's arg parser would treat as an unknown option ("error: unknown option '---'").
-# Always captures stdout so cost is logged even when the agent hits --max-turns.
-run_agent() {  # $1=agent  $2=model  $3=prompt-file
-  local agent="$1" model="$2" pf="$3" out rc cost subtype
+# Usage: run_agent <agent> <model> <prompt-file> [<max-turns>]
+# Feeds the prompt via stdin (not -p arg): task files starting with YAML "---" frontmatter
+# would be parsed by claude as an unknown CLI option ("error: unknown option '---'").
+run_agent() {
+  local agent="$1" model="$2" pf="$3" mt="${4:-$max_turns}" out rc cost subtype
   out=$(claude -p \
           --agent "$agent" \
           --model "$model" \
-          --max-turns "$max_turns" \
+          --max-turns "$mt" \
           --output-format json < "$pf" 2>>"$ROOT/logs/dispatcher.log") && rc=0 || rc=$?
 
   if echo "$out" | jq -e . >/dev/null 2>&1; then
@@ -147,7 +157,6 @@ run_agent() {  # $1=agent  $2=model  $3=prompt-file
 
   if [ "$rc" -ne 0 ]; then
     # A turn-budget cutoff exits non-zero but the agent's writes already landed.
-    # Treat it as complete so the issue advances rather than looping.
     if [ "$subtype" = "error_max_turns" ]; then
       log "ran $agent ($model) cost=\$$cost — hit max-turns; treating as complete"
       return 0
@@ -159,6 +168,124 @@ run_agent() {  # $1=agent  $2=model  $3=prompt-file
   log "ran $agent ($model) cost=\$$cost"
   return 0
 }
+
+# ---- helper: promote backlog issues whose declared dependencies are all closed ----
+# Dependencies are declared in the issue body as a line: "depends_on: #12, #15"
+# This is deterministic (no tokens) and runs before the lead on every lead-window tick.
+promote_backlog() {
+  local issues num body deps all_closed dep dep_state
+  issues=$(gh issue list --repo "$REPO" --label "agent-backlog" --state open \
+    --json number,body 2>/dev/null || true)
+  [ -z "${issues:-}" ] || [ "$issues" = "[]" ] && return 0
+
+  while IFS= read -r iss; do
+    num=$(printf '%s' "$iss" | jq -r '.number')
+    body=$(printf '%s' "$iss" | jq -r '.body // ""')
+    deps=$(printf '%s' "$body" | grep -iE '^depends_on:' | head -1 \
+           | sed 's/[^:]*:[[:space:]]*//' | grep -oE '[0-9]+' || true)
+
+    if [ -z "${deps:-}" ]; then
+      gh issue edit "$num" --repo "$REPO" \
+        --remove-label "agent-backlog" --add-label "agent-todo" >/dev/null 2>&1 || true
+      log "  promoted backlog #$num → agent-todo (no dependencies declared)"
+      continue
+    fi
+
+    all_closed=true
+    for dep in $deps; do
+      dep_state=$(gh issue view "$dep" --repo "$REPO" --json state \
+        --jq '.state' 2>/dev/null || echo "OPEN")
+      [ "$dep_state" = "CLOSED" ] || { all_closed=false; break; }
+    done
+
+    if [ "$all_closed" = "true" ]; then
+      gh issue edit "$num" --repo "$REPO" \
+        --remove-label "agent-backlog" --add-label "agent-todo" >/dev/null 2>&1 || true
+      log "  promoted backlog #$num → agent-todo (all dependencies closed)"
+    fi
+  done < <(printf '%s' "$issues" | jq -c '.[]' 2>/dev/null)
+}
+
+# ============================================================
+# LEAD PASS — at configured lead_windows minute values or --force-lead.
+# Always exits after this block so lead and karen/worker never share a tick.
+# ============================================================
+is_lead_window=$(jq -r --argjson m "$minute" \
+  '(.lead_windows // [0]) | index($m) != null' "$SCHEDULE")
+
+if [ "$is_lead_window" = "true" ] || [ "$force_lead" = "true" ]; then
+
+  if [ "$lead_paused" = "true" ]; then
+    log "lead paused (lead_paused: true) — skipping lead pass"
+    exit 0
+  fi
+
+  # Promote backlog issues with satisfied dependencies (token-free).
+  promote_backlog
+
+  # Collect inbox items that will be fed to the lead.
+  fed_items=()
+  for f in "$INBOX"/*.md; do
+    [ -e "$f" ] || continue
+    fed_items+=("$f")
+  done
+  inbox_count=${#fed_items[@]}
+
+  # Count remaining backlog issues (after promotion above).
+  backlog_count=$(gh issue list --repo "$REPO" --label "agent-backlog" --state open \
+    --json number --jq 'length' 2>/dev/null || echo 0)
+
+  if [ "$inbox_count" -eq 0 ] && [ "${backlog_count:-0}" -eq 0 ] && [ "$force_lead" != "true" ]; then
+    log "lead window: nothing to do (empty inbox, no backlog)"
+    exit 0
+  fi
+
+  log "LEAD PASS inbox=${inbox_count} backlog=${backlog_count:-0}"
+
+  # Fetch current board state for the lead prompt.
+  todo_list=$(gh issue list --repo "$REPO" --label "agent-todo" --state open \
+    --json number,title --jq '[.[] | "  #\(.number) \(.title)"] | join("\n")' 2>/dev/null \
+    || echo "  (none)")
+  doing_list=$(gh issue list --repo "$REPO" --label "agent-doing" --state open \
+    --json number,title --jq '[.[] | "  #\(.number) \(.title)"] | join("\n")' 2>/dev/null \
+    || echo "  (none)")
+  review_list=$(gh issue list --repo "$REPO" --label "agent-review" --state open \
+    --json number,title --jq '[.[] | "  #\(.number) \(.title)"] | join("\n")' 2>/dev/null \
+    || echo "  (none)")
+  backlog_list=$(gh issue list --repo "$REPO" --label "agent-backlog" --state open \
+    --json number,title --jq '[.[] | "  #\(.number) \(.title)"] | join("\n")' 2>/dev/null \
+    || echo "  (none)")
+
+  tmp=$(mktemp)
+  {
+    printf 'This is your scheduled lead planning pass. Repo: %s\n\n' "$REPO"
+    printf '## GitHub Issues board\n\n'
+    printf 'agent-todo (ready for workers):\n%s\n\n'              "$todo_list"
+    printf 'agent-doing (in flight):\n%s\n\n'                     "$doing_list"
+    printf 'agent-review (awaiting karen verification):\n%s\n\n'  "$review_list"
+    printf 'agent-backlog (waiting on dependencies):\n%s\n\n'     "$backlog_list"
+    if [ "$inbox_count" -gt 0 ]; then
+      printf '## Inbox (%d item(s))\n\n' "$inbox_count"
+      for f in "${fed_items[@]+"${fed_items[@]}"}"; do
+        printf '### %s\n\n' "$(basename "$f")"
+        cat "$f"
+        printf '\n\n'
+      done
+    else
+      printf '## Inbox\n\n(empty — check board state and backlog dependencies above)\n\n'
+    fi
+  } > "$tmp"
+
+  run_agent lead "$lead_model" "$tmp" "$lead_max_turns" || true
+  rm -f "$tmp"
+
+  # Archive inbox items that were fed to the lead on this pass.
+  for f in "${fed_items[@]+"${fed_items[@]}"}"; do
+    [ -e "$f" ] && mv "$f" "$INBOX/done/" 2>/dev/null || true
+  done
+
+  exit 0
+fi
 
 # ============================================================
 # RULE 1 — Priority: karen verification always runs before new work.

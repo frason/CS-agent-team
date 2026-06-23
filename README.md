@@ -2,7 +2,7 @@
 
 **A background "agent team" for Claude Code that gets work done on your subscription without burning through your 5-hour usage limit.**
 
-Create GitHub Issues for what you want done. A fixed cron "heartbeat" runs worker agents one at a time on a stagger — so something is almost always progressing, but never all at once. A verifier (*karen*) checks that work marked done actually works, posting its verdict as an issue comment and closing the issue on pass.
+Drop a goal file into `lead-inbox/` and the system handles the rest: a **lead** decomposes goals into GitHub Issues, **workers** execute them one at a time on a stagger, and a **verifier** (*karen*) confirms each is actually done before closing it.
 
 ---
 
@@ -14,36 +14,44 @@ The principle throughout is **token frugality + steady pacing**: cheap models fo
 
 ## How it works
 
-- Tasks live as **GitHub Issues** labelled `agent-todo`. You create the issues; the dispatcher claims them.
-- A single **cron heartbeat** runs `dispatcher.sh` every ~10 minutes. It never changes.
-- Each tick does **at most one thing** — karen verification first if pending, otherwise one worker run. Never concurrent.
+- All work lives as **GitHub Issues** with a label-based state machine. The lead creates them from your goals.
+- A single **cron heartbeat** runs `dispatcher.sh` every 10 minutes. It never changes.
+- Each tick does **at most one thing** in priority order: lead → karen → worker. Never concurrent.
 - All policy lives in **`schedule.json`** (no LLM touches crontab).
 - **Labels carry state**:
 
 ```
 agent-todo    → queued, not yet claimed
 agent-doing   → dispatcher claimed it (prevents double-dispatch)
-agent-review  → worker done; awaiting karen verification
+agent-review  → worker done; awaiting karen
 agent-done    → karen passed; issue closed
+agent-backlog → waiting on dependencies (lead creates these for sequenced work)
 ```
 
 ```
-You ─ create GitHub Issues ─▶ label: agent-todo
-                                      │
-cron ─ every 10m ─▶ dispatcher ───────┤ claims oldest agent-todo → agent-doing
-                         │            │ runs worker → posts summary comment → agent-review
-                         │            │ runs karen  → posts verdict comment
-                         │            │   PASSED → agent-done, issue closed
-                         └────────────┘   FAILED → agent-todo, worker retries
-                    logs/usage.jsonl  (cost per run)
-                    state/STATUS.md   (rolling 5h spend meter)
+drop file ─▶ lead-inbox/
+                  │
+cron ─ 10m ─▶ dispatcher
+                  │
+           [lead_windows]
+                  │ promote agent-backlog → agent-todo (deterministic, no tokens)
+                  │ run lead ─────────────────────────────▶ gh issue create (agent-todo / agent-backlog)
+                  │   reads inbox + board, archives inbox             │
+                  │                                                   ▼
+           [other ticks]                                  labels carry all state
+                  ├── agent-review? ── karen ── PASSED → agent-done, close issue
+                  │                             FAILED → agent-todo, worker retries
+                  └── agent-todo?  ── worker ── summary comment → agent-review
+              logs/usage.jsonl  (cost per run)
+              state/STATUS.md   (rolling 5h spend meter)
 ```
 
 ## Roles
 
 | Role | Runs | Model | Job |
 |------|------|-------|-----|
-| **Worker** | scheduled, staggered | Haiku | Execute one issue's task; write summary to `state/worker_output.txt`. |
+| **Lead** | scheduled, `lead_windows` | Sonnet | Drain `lead-inbox/`, decompose goals into GitHub Issues, manage sequencing via `depends_on`. |
+| **Worker** | scheduled, staggered | Haiku | Execute one `agent-todo` issue; write summary to `state/worker_output.txt`. |
 | **Karen** | scheduled, gated | Sonnet | Independently verify finished work; write verdict to `state/verdict.txt`; never edits source. |
 
 ---
@@ -96,9 +104,12 @@ The skill files live under `skills/agent-team/`. Run these from that folder:
 
 ## Using it
 
-- **Queue work** — create a GitHub Issue on the configured repo and add the `agent-todo` label.
-- **Check status** — watch issue labels and comments on GitHub. The dispatcher posts the worker summary and karen's verdict as comments before advancing the label.
-- **Force a run now** — `scripts/dispatcher.sh --force-worker` (or `--force-worker <N>` for a specific issue). Bypasses `active_hours` and the soft budget throttle.
+- **Delegate a goal** — drop a `.md` file into `lead-inbox/`. The lead picks it up on the next `lead_windows` tick and creates all the GitHub Issues.
+- **Queue a task manually** — create a GitHub Issue and add the `agent-todo` label. The dispatcher claims it on the next non-lead tick.
+- **Check status** — watch issue labels and comments on GitHub. The dispatcher posts worker summaries and karen's verdict as comments before changing labels.
+- **Force a lead run** — `scripts/dispatcher.sh --force-lead`. Bypasses `active_hours` and the soft budget throttle.
+- **Force a worker run** — `scripts/dispatcher.sh --force-worker` (or `--force-worker <N>` for a specific issue).
+- **Pause lead only** — set `"lead_paused": true` in `schedule.json`.
 - **Pause everything** — set `"paused": true` in `schedule.json`.
 - **Watch spend** — `state/STATUS.md` shows a live 5h spend bar when `telemetry.show_rolling_budget_in_status` is true.
 
@@ -109,9 +120,13 @@ The skill files live under `skills/agent-team/`. Run these from that folder:
 | Field | Meaning |
 |------|---------|
 | `paused` | `true` halts all runs immediately. |
-| `worker_model` | Model for workers (default `haiku`). Accepts tier aliases (`haiku`, `sonnet`, `opus`, `fable`) or pinned model IDs (e.g. `claude-haiku-4-5-20251001`). Current tiers: Haiku 4.5 / Sonnet 4.6 / Opus 4.8 / Fable 5. |
+| `worker_model` | Model for workers (default `haiku`). Accepts tier aliases or pinned IDs. |
 | `karen_model` | Model for the verifier (default `sonnet`). |
-| `max_turns` | Hard cap on agentic turns per run. |
+| `lead_model` | Model for the lead (default `sonnet`). |
+| `max_turns` | Hard cap on agentic turns for worker/karen. |
+| `lead_max_turns` | Hard cap on agentic turns for lead (default `50`). |
+| `lead_paused` | `true` skips lead passes without halting workers or karen. |
+| `lead_windows` | Minutes at which the lead runs (default `[0]` — top of every hour). `[0, 30]` runs at :00 and :30. |
 | `soft_budget_usd_per_5h` | Self-throttle: skip ticks once trailing-5h spend hits this. `0` disables. |
 | `telemetry.show_rolling_budget_in_status` | `true` writes a live 5h-spend meter to `state/STATUS.md` each tick (token-free). |
 | `active_hours` | Only run between `start` and `end` (24-hour clock). |
@@ -132,18 +147,26 @@ CS-agent-team/
     └── agent-team/
         ├── SKILL.md              # how Claude installs & operates the system
         ├── scripts/
-        │   ├── dispatcher.sh     # cron heartbeat (GitHub Issues-backed)
+        │   ├── dispatcher.sh     # cron heartbeat (lead → karen → worker priority)
         │   ├── budget_check.sh   # writes 5h spend meter to state/STATUS.md
-        │   ├── setup-labels.sh   # one-time: create GitHub labels + state/ dir
+        │   ├── setup-labels.sh   # one-time: create 5 GitHub labels + local dirs
         │   └── setup.sh          # interactive installer
         └── assets/
-            ├── schedule.json     # policy template
+            ├── schedule.json     # policy template (includes lead_windows etc.)
             ├── settings.json     # permission allowlist
             ├── env.example       # cron auth template
             ├── STATUS.md         # status-board template
             └── agents/
+                ├── lead.md       # lead: decomposes goals → GitHub Issues
                 ├── worker.md
                 └── karen.md
+
+# Runtime directories (created by setup):
+# lead-inbox/        ← drop goal .md files here; lead drains them
+# lead-inbox/done/   ← processed inbox items archived here
+# questions/         ← lead writes client questions here for the PM
+# state/             ← STATUS.md, verdict.txt, worker_output.txt
+# logs/              ← dispatcher.log, usage.jsonl, activity.log
 ```
 
 ## Limitations & honest caveats

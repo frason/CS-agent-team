@@ -35,11 +35,11 @@ echo "Repo:      $REPO"
 echo
 
 # ---- 1. local directories ----
-mkdir -p "$ROOT/state" "$ROOT/logs"
-echo "✓  state/ and logs/ directories ready"
+mkdir -p "$ROOT/state" "$ROOT/logs" "$ROOT/lead-inbox/done"
+echo "✓  state/, logs/, and lead-inbox/done/ directories ready"
 
 # ---- 2. GitHub labels ----
-# Colors: Orange, Blue, Yellow, Green (GitHub hex, no leading #)
+# Colors: Orange, Blue, Yellow, Green, Grey (GitHub hex, no leading #)
 create_label() {  # $1=name  $2=hex-color  $3=description
   local name="$1" color="$2" desc="$3"
   if gh label create "$name" --repo "$REPO" \
@@ -50,10 +50,11 @@ create_label() {  # $1=name  $2=hex-color  $3=description
   fi
 }
 
-create_label "agent-todo"   "E4692A" "Work queued and waiting for the dispatcher"
-create_label "agent-doing"  "1D76DB" "Dispatcher claimed this issue (in-flight)"
-create_label "agent-review" "F5C518" "Worker done; awaiting karen verification"
-create_label "agent-done"   "0E8A16" "Karen passed; issue closed"
+create_label "agent-todo"    "E4692A" "Work queued and waiting for the dispatcher"
+create_label "agent-doing"   "1D76DB" "Dispatcher claimed this issue (in-flight)"
+create_label "agent-review"  "F5C518" "Worker done; awaiting karen verification"
+create_label "agent-done"    "0E8A16" "Karen passed; issue closed"
+create_label "agent-backlog" "AAAAAA" "Sequenced task waiting on dependencies"
 
 echo
 echo "All done. Next steps:"
@@ -64,6 +65,7 @@ echo "       claude setup-token"
 echo "       cp assets/env.example .env  # then paste token + PATH"
 echo "  3. Install the cron heartbeat (crontab -e):"
 echo "       */10 * * * * $ROOT/scripts/dispatcher.sh >> $ROOT/logs/dispatcher.log 2>&1"
-echo "  4. Create a GitHub Issue in $REPO and add the 'agent-todo' label."
-echo "     The dispatcher will claim it on the next tick, or run it now:"
-echo "       $ROOT/scripts/dispatcher.sh --force-worker"
+echo "  4. Drop a goal file into lead-inbox/ to kick off the lead, or create a GitHub Issue"
+echo "     in $REPO with the 'agent-todo' label for manual task entry."
+echo "     Test the lead right now:   $ROOT/scripts/dispatcher.sh --force-lead"
+echo "     Test a worker right now:   $ROOT/scripts/dispatcher.sh --force-worker"
