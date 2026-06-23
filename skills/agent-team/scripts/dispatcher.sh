@@ -251,7 +251,6 @@ fi
 
 if { [ "$is_window" = "true" ] || [ "$force_lead" = "true" ]; } && \
    [ "$lead_paused" != "true" ] && { [ "$inbox_count" -gt 0 ] || [ "$review_count" -gt 0 ]; }; then
-if [ "$is_window" = "true" ] && [ "$lead_paused" != "true" ] && { [ "$inbox_count" -gt 0 ] || [ "$review_count" -gt 0 ]; }; then
   # Snapshot exactly the inbox items we feed to the lead so the dispatcher can archive them
   # itself after the run — deterministically, not relying on the LLM to do file housekeeping
   # within its turn budget. (A max-turns cutoff would otherwise leave them to be reprocessed
