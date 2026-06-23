@@ -15,36 +15,46 @@ session never burns the rolling 5-hour limit all at once.
 
 | Role   | Runs | Model | Job |
 |--------|------|-------|-----|
-| Worker | unattended, staggered | haiku | Executes the task from one GitHub Issue; writes a summary to `state/worker_output.txt`. |
-| Karen  | unattended, gated | sonnet | Independently verifies that the worker's output actually meets the requirements; writes verdict to `state/verdict.txt`; never edits source. |
+| Lead   | scheduled, `lead_windows` | sonnet | Drains `lead-inbox/`, decomposes goals into GitHub Issues, manages sequencing via `depends_on`. |
+| Worker | scheduled, staggered | haiku | Executes one `agent-todo` issue; writes summary to `state/worker_output.txt`. |
+| Karen  | scheduled, gated | sonnet | Independently verifies finished work; writes verdict to `state/verdict.txt`; never edits source. |
 
 ## How it works
 
-- **Tasks are GitHub Issues** labelled `agent-todo`. You create the issues; the dispatcher claims them.
+- **Tasks are GitHub Issues** with label-based state. The lead creates them from goals; workers claim them.
 - **One fixed cron heartbeat** runs `scripts/dispatcher.sh` every 10 minutes. It never changes.
 - **All policy lives in `schedule.json`** (no LLM touches crontab).
-- **Each tick does at most ONE thing** — karen verification first if any `agent-review` issue exists,
-  otherwise one worker run. Never concurrent.
+- **Each tick does at most ONE thing** (priority: lead → karen → worker). Never concurrent.
 - **Labels carry state** (atomic swap prevents double-dispatch):
   ```
   agent-todo    → queued, not yet claimed
   agent-doing   → dispatcher claimed it (in-flight)
   agent-review  → worker done; awaiting karen
   agent-done    → karen passed; issue closed
+  agent-backlog → sequenced task waiting on dependencies (created by lead)
   ```
-- **FAILED karen verdict cycles the issue back** to `agent-todo` with a comment explaining
-  what needs to be fixed, so the worker retries on the next eligible tick.
+- **Backlog promotion**: the dispatcher checks `depends_on:` in every `agent-backlog` issue each
+  lead-window tick and relabels to `agent-todo` once all referenced issues are CLOSED.
+- **FAILED karen verdict** cycles the issue back to `agent-todo` with a comment explaining
+  what needs fixing, so the worker retries on the next eligible tick.
 
 ```
-You ─ create GitHub Issues ─▶ (label: agent-todo)
-                                      │
-cron ─every 10m─▶ dispatcher.sh ─────┤ claims oldest agent-todo → agent-doing
-                       │             │ runs worker → posts summary comment → agent-review
-                       │             │ runs karen  → posts verdict comment
-                       │             │   PASSED → agent-done, closes issue
-                       └─────────────┘   FAILED → agent-todo, worker retries
-                  logs/usage.jsonl (cost per run)
-                  state/STATUS.md  (rolling budget meter)
+drop file ─▶ lead-inbox/          You ─ create GitHub Issues ─▶ (agent-todo)
+                │                                                      │
+cron ─10m─▶ dispatcher ───────────────────────────────────────────────┤
+                │                                                      │
+         [lead_window]                                                 │
+                │ promotes backlog → todo                              │
+                │ runs lead ──────────────────────────────▶ creates/updates GitHub Issues
+                │   reads inbox + board state                          │
+                │   archives lead-inbox/ items                         │
+                │                                                      │
+         [all other ticks]                                             │
+                ├── agent-review exists? ── karen ──────────────────▶ PASSED → agent-done, close
+                │                                                      FAILED → agent-todo, retry
+                └── agent-todo exists? ── worker ──────────────────▶ summary comment → agent-review
+            logs/usage.jsonl (cost per run)
+            state/STATUS.md  (rolling budget meter)
 ```
 
 ## Setting it up
@@ -77,7 +87,8 @@ Confirm the target directory with the client first.
    ```bash
    bash scripts/setup-labels.sh
    ```
-   This creates `agent-todo`, `agent-doing`, `agent-review`, and `agent-done` on the repo.
+   This creates `agent-todo`, `agent-doing`, `agent-review`, `agent-done`, and `agent-backlog`
+   on the repo, and scaffolds `lead-inbox/done/`.
 
 5. **Authenticate cron to the subscription** (not API):
    ```bash
@@ -93,7 +104,8 @@ Confirm the target directory with the client first.
 
 7. **Test once by hand** before trusting cron:
    ```bash
-   ./scripts/dispatcher.sh --force-worker
+   ./scripts/dispatcher.sh --force-lead    # test the lead pass
+   ./scripts/dispatcher.sh --force-worker  # test a worker run
    ```
    Then check `logs/dispatcher.log` and `logs/usage.jsonl`.
 
@@ -104,27 +116,37 @@ if a worker stalls).
 
 ## Operating it (what to tell the client)
 
-- **Queue work** — create a GitHub Issue on the configured repo and add the `agent-todo` label.
-  The dispatcher picks it up on the next tick (or immediately with `--force-worker`).
-- **Check status** — watch the issue labels and comments on GitHub. The dispatcher posts the
-  worker's summary and karen's verdict as comments before changing labels.
-- **Rolling budget** — `state/STATUS.md` shows a 5h rolling spend bar (updated every tick) when
+- **Delegate a goal** — drop a `.md` file into `lead-inbox/`. The lead will pick it up on the
+  next `lead_windows` tick, break it into GitHub Issues, and start sequencing work automatically.
+- **Queue a task manually** — create a GitHub Issue and add the `agent-todo` label. The
+  dispatcher claims it on the next non-lead tick.
+- **Check status** — watch issue labels and comments on GitHub. The dispatcher posts the worker
+  summary and karen's verdict as comments before changing labels.
+- **Rolling budget** — `state/STATUS.md` shows a 5h rolling spend bar when
   `telemetry.show_rolling_budget_in_status` is true.
-- **Force a run now** — `scripts/dispatcher.sh --force-worker` (or `--force-worker <N>` for a
-  specific issue). Bypasses `active_hours` and the soft budget throttle; still respects `paused`.
+- **Force a run now** — `scripts/dispatcher.sh --force-lead` (lead) or `--force-worker` /
+  `--force-worker <N>` (worker). All force flags bypass `active_hours` and the soft budget
+  throttle; they still respect `paused`.
+- **Pause lead only** — set `"lead_paused": true` in `schedule.json`.
 - **Pause everything** — set `"paused": true` in `schedule.json`.
-- **Adjust hours** — set `active_hours.start` and `active_hours.end` (24h clock) in `schedule.json`.
-- **Cap spend** — set `soft_budget_usd_per_5h` in `schedule.json` to skip ticks once the
-  trailing 5-hour window hits the limit. `0` disables.
+- **Adjust lead schedule** — set `lead_windows` to a list of minute values (e.g. `[0, 30]`
+  runs the lead at :00 and :30 of every hour; `[0]` is the default — top of the hour).
+- **Adjust active hours** — set `active_hours.start` / `.end` (24h clock).
+- **Cap spend** — set `soft_budget_usd_per_5h` to skip ticks once the 5h trailing window
+  hits the limit. `0` disables.
 
 ## schedule.json reference
 
 | Field | Meaning |
 |-------|---------|
 | `paused` | `true` halts all runs immediately. |
-| `worker_model` | Model for workers (default `haiku`). Accepts tier aliases (`haiku`, `sonnet`, `opus`, `fable`) or pinned model IDs. |
+| `worker_model` | Model for workers (default `haiku`). |
 | `karen_model` | Model for the verifier (default `sonnet` — needs reasoning). |
-| `max_turns` | Hard cap on agentic turns per run. |
+| `lead_model` | Model for the lead (default `sonnet`). |
+| `max_turns` | Hard cap on agentic turns for worker/karen runs. |
+| `lead_max_turns` | Hard cap on agentic turns for lead runs (default `50`). |
+| `lead_paused` | `true` skips the lead pass without halting workers/karen. |
+| `lead_windows` | List of minute values when the lead runs (default `[0]` — top of every hour). E.g. `[0, 30]` runs at :00 and :30. |
 | `soft_budget_usd_per_5h` | Heuristic self-throttle: skip ticks once trailing-5h spend hits this. `0` disables. |
 | `telemetry.show_rolling_budget_in_status` | `true` updates `state/STATUS.md` with a spend bar on every tick. |
 | `active_hours` | Only run between `start` and `end` (24-hour clock). |
@@ -157,13 +179,14 @@ if a worker stalls).
 
 ## Bundled files
 
-- `scripts/dispatcher.sh`   — the cron heartbeat (GitHub Issues-backed, portable bash 3.2).
+- `scripts/dispatcher.sh`   — cron heartbeat (lead → karen → worker priority, bash 3.2).
 - `scripts/budget_check.sh` — token-free rolling-budget meter for `state/STATUS.md`.
-- `scripts/setup-labels.sh` — one-time init: creates `state/`/`logs/` and GitHub labels.
+- `scripts/setup-labels.sh` — one-time init: creates directories and all 5 GitHub labels.
 - `scripts/setup.sh`        — interactive installer (wraps all setup steps).
 - `assets/schedule.json`    — policy template (edit the deployed copy).
 - `assets/STATUS.md`        — status board template.
 - `assets/settings.json`    — permission allowlist for `.claude/settings.json`.
 - `assets/env.example`      — cron environment template.
+- `assets/agents/lead.md`   — lead agent definition (planning + GitHub Issue creation).
 - `assets/agents/worker.md` — worker agent definition.
 - `assets/agents/karen.md`  — karen (verifier) agent definition.
