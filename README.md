@@ -65,6 +65,13 @@ Then, in the project you want worked on, ask Claude to **"set up the agent team.
 ### As a bare skill
 Copy the skill folder into your skills directory — `skills/agent-team/` → `~/.claude/skills/agent-team/` (personal) or `<project>/.claude/skills/agent-team/`. (Or install the packaged `agent-team.skill`.) Then ask Claude to "set up the agent team" as above.
 
+### Scripted (fastest)
+From inside `skills/agent-team/`, run the interactive installer:
+```bash
+./scripts/setup.sh
+```
+It scaffolds the runtime tree, copies the asset templates into place (without clobbering anything you've customized), checks for `jq`/`claude`, seeds `.env`, and offers to append the cron heartbeat line. Re-running it is safe.
+
 ### Manual
 The skill files live under `skills/agent-team/`. Run these from that folder.
 1. Scaffold the runtime dirs in your project:
@@ -126,6 +133,7 @@ Open the PM whenever you like: `claude --agent pm`.
 | `pre_dispatch.enabled` | `true` runs a task's `pre_dispatch_cmd:` before the worker boots and injects the output as context. Off by default — see Pre-dispatch below. |
 | `pre_dispatch.timeout_sec` | Max seconds the pre-dispatch command may run. Default `10`. |
 | `pre_dispatch.max_bytes` | Max bytes of pre-dispatch output injected into the task. Default `4096`. |
+| `telemetry.show_rolling_budget_in_status` | `true` writes a live 5h-spend meter to the top of `state/STATUS.md` each tick (token-free), so the PM can report utilization without recomputing. |
 | `active_hours` | Only run between `start` and `end` (24-hour clock). |
 | `github.*` | Optional GitHub edge: `enabled`, `repo` (owner/name), `inbox_label`, `base_branch`, `work_branch`. |
 
@@ -175,7 +183,9 @@ CS-agent-team/
         ├── SKILL.md              # how Claude installs & operates the system
         ├── scripts/
         │   ├── dispatcher.sh     # cron heartbeat
-        │   └── gh_sync.sh        # GitHub bridge (optional)
+        │   ├── gh_sync.sh        # GitHub bridge (optional)
+        │   ├── budget_check.sh   # writes the 5h budget meter into STATUS.md
+        │   └── setup.sh          # interactive installer
         └── assets/
             ├── schedule.json     # policy / preferences
             ├── settings.json     # permission allowlist
