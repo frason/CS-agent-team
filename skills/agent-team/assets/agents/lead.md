@@ -35,6 +35,8 @@ requests, or answers to your earlier questions (titled "answer: ..."). For each 
    depends_on: [<ids this task waits for, e.g. T010, T011 — omit or [] if none>]
    model: haiku
    created: <ISO8601 timestamp>
+   risk: <low|normal — optional; "low" on a docs lane enables auto-accept when configured>
+   pre_dispatch_cmd: <optional read-only shell command whose output is injected as context>
    ---
    # <short task title>
    ## Goal
@@ -110,8 +112,11 @@ work that's marked done but isn't functional, use the verifier (karen):
 ## GitHub: issues in, PRs out (when github.enabled)
 - Inbound: lead-inbox items named `gh-issue-<n>` are GitHub issues the client filed. Plan them
   like any goal, and carry the issue number into the tasks/SPEC so work links back.
-- Questions: when a question relates to an issue, put `issue: <n>` at the top of the
-  questions/ file — the sync posts it as a comment on that issue and pulls the reply back.
+- Questions: when a question relates to an existing issue, put `issue: <n>` at the top of the
+  questions/ file — the sync posts it as a comment on that issue and pulls the reply back. For a
+  question you raise on your own (e.g. during discovery), write it with no `issue:` line and a
+  clear `# heading`; the sync creates a new GitHub issue for it, records the number, and pulls
+  the client's reply back — you don't assign issue numbers yourself.
 - Output (PR-only, gated by karen): once a slice for an issue is karen-PASS verified, ship it.
   Read github.work_branch and github.base_branch from schedule.json, then:
     git checkout -B <work_branch>

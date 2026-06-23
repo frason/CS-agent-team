@@ -65,6 +65,13 @@ Then, in the project you want worked on, ask Claude to **"set up the agent team.
 ### As a bare skill
 Copy the skill folder into your skills directory — `skills/agent-team/` → `~/.claude/skills/agent-team/` (personal) or `<project>/.claude/skills/agent-team/`. (Or install the packaged `agent-team.skill`.) Then ask Claude to "set up the agent team" as above.
 
+### Scripted (fastest)
+From inside `skills/agent-team/`, run the interactive installer:
+```bash
+./scripts/setup.sh
+```
+It scaffolds the runtime tree, copies the asset templates into place (without clobbering anything you've customized), checks for `jq`/`claude`, seeds `.env`, and offers to append the cron heartbeat line. Re-running it is safe.
+
 ### Manual
 The skill files live under `skills/agent-team/`. Run these from that folder.
 1. Scaffold the runtime dirs in your project:
@@ -117,14 +124,39 @@ Open the PM whenever you like: `claude --agent pm`.
 | `lanes` | Worker lanes (categories), sized by the lead from the plan. |
 | `lane_cooldown_min` | A lane won't rerun until this many minutes pass — the main pacing knob. |
 | `lead_windows` | Minutes-of-hour the lead may run, e.g. `[0, 30]`. |
-| `worker_model` / `lead_model` / `karen_model` | Models per role (`haiku`, `sonnet`, `opus`, `fable`). A task's own `model:` overrides. |
+| `worker_model` / `lead_model` / `karen_model` | Models per role. Accepts tier aliases (`haiku`, `sonnet`, `opus`, `fable`) that auto-track current releases, or pinned model IDs (e.g. `claude-haiku-4-5-20251001`). Current tiers: Haiku 4.5, Sonnet 4.6, Opus 4.8, Fable 5. A task's own `model:` field overrides the default for that task. |
 | `max_turns` | Hard cap on agentic turns per run. |
 | `require_verification` | `true` = every task must pass karen before `done/` (stricter, pricier). `false` (default) = verify in batches at milestones. |
 | `soft_budget_usd_per_5h` | Self-throttle: skip ticks once trailing-5h spend hits this. `0` disables. |
+| `auto_accept_low_risk` | `true` skips karen for tasks marked `risk: low` whose lane is in `auto_accept_low_risk_lanes` (default `["docs"]`). Classification is mechanical (lane membership), not self-reported by the LLM. |
+| `auto_accept_low_risk_lanes` | Lanes eligible for auto-accept. Default `["docs"]`. Only read-only lanes that can't break running code should be listed here. |
+| `pre_dispatch.enabled` | `true` runs a task's `pre_dispatch_cmd:` before the worker boots and injects the output as context. Off by default — see Pre-dispatch below. |
+| `pre_dispatch.timeout_sec` | Max seconds the pre-dispatch command may run. Default `10`. |
+| `pre_dispatch.max_bytes` | Max bytes of pre-dispatch output injected into the task. Default `4096`. |
+| `telemetry.show_rolling_budget_in_status` | `true` writes a live 5h-spend meter to the top of `state/STATUS.md` each tick (token-free), so the PM can report utilization without recomputing. |
 | `active_hours` | Only run between `start` and `end` (24-hour clock). |
 | `github.*` | Optional GitHub edge: `enabled`, `repo` (owner/name), `inbox_label`, `base_branch`, `work_branch`. |
 
 **Cadence tip:** four lanes on 10-minute ticks settle at ~40-minute spacing each. Want a true 30-minute cadence? Use three lanes, or tighten the cron to ~7-minute ticks.
+
+## Pre-dispatch context injection (optional)
+
+When `pre_dispatch.enabled` is `true`, the dispatcher runs a task's optional `pre_dispatch_cmd:` frontmatter field before booting the worker and appends the output to the task file as a `## Pre-dispatch context` block. This gives the worker targeted, up-to-date context (e.g. relevant file listing, grep results) without burning tokens in the worker's planning turn.
+
+The lead sets `pre_dispatch_cmd:` on tasks where it helps. Example task frontmatter:
+
+```
+pre_dispatch_cmd: grep -rn "TODO" src/docs
+risk: low
+```
+
+**Security:** the command string is author-controlled (the lead, an LLM) and runs unattended, so it is tightly sandboxed:
+- Shell metacharacters (`;`, `|`, `&`, `>`, `<`, `` ` ``, `$(`, `${`, newlines) are rejected outright.
+- The leading command must be on a read-only allowlist: `grep`, `rg`, `find`, `ls`, `tree`, `cat`, `head`, `wc`, `sed -n`, `git ls-files`, `git grep`.
+- Output is capped at `pre_dispatch.max_bytes` and the command is killed after `pre_dispatch.timeout_sec`.
+- Nothing that can mutate state is ever allowed.
+
+Off by default. Enable with `pre_dispatch.enabled: true` in `schedule.json`.
 
 ## GitHub integration (optional)
 
@@ -151,7 +183,9 @@ CS-agent-team/
         ├── SKILL.md              # how Claude installs & operates the system
         ├── scripts/
         │   ├── dispatcher.sh     # cron heartbeat
-        │   └── gh_sync.sh        # GitHub bridge (optional)
+        │   ├── gh_sync.sh        # GitHub bridge (optional)
+        │   ├── budget_check.sh   # writes the 5h budget meter into STATUS.md
+        │   └── setup.sh          # interactive installer
         └── assets/
             ├── schedule.json     # policy / preferences
             ├── settings.json     # permission allowlist
