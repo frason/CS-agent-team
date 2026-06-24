@@ -1,15 +1,15 @@
 ---
 name: agent-team
-description: Set up and operate a background "agent team" for Claude Code — a cron heartbeat dispatches worker agents one at a time against tasks tracked as GitHub Issues, and a verifier (karen) audits each finished task before closing it. Paces token use to fit a Claude subscription's rolling 5-hour limit. Use this skill whenever the client wants to delegate coding or side-project work to background agents, run staggered subagents with cron, set up an orchestrator/worker/verifier team, keep working through long sessions without hitting the 5-hour usage limit, or bootstrap, configure, or adjust this kind of delegated agent system — even if they don't name it explicitly.
+description: Set up and operate a background "agent team" for Claude Code — a lead decomposes goals into GitHub Issues, worker agents execute them one at a time on a stagger, and a verifier (karen) audits each finished task before closing it. Paces token use to fit a Claude subscription's rolling 5-hour limit. Use this skill whenever the client wants to delegate coding or side-project work to background agents, run staggered subagents with cron, set up a lead/worker/verifier team, keep working through long sessions without hitting the 5-hour usage limit, or bootstrap, configure, or adjust this kind of delegated agent system — even if they don't name it explicitly.
 ---
 
 # Agent Team
 
-A background delegation system for Claude Code. Work is tracked as **GitHub Issues**. A cron
-**heartbeat** runs worker agents one at a time on a stagger. A **verifier** (karen) audits each
-finished task and closes the issue on pass. Everything runs on the client's Claude
-**subscription** (no API billing), and the design keeps token use low and paced so a long
-session never burns the rolling 5-hour limit all at once.
+A background delegation system for Claude Code. Drop a goal into `lead-inbox/` — a **lead**
+decomposes it into GitHub Issues, **worker** agents execute them one at a time on a stagger,
+and **karen** (the verifier) audits each finished task and closes the issue on pass. Everything
+runs on the client's Claude **subscription** (no API billing), and the design keeps token use
+low and paced so a long session never burns the rolling 5-hour limit all at once.
 
 ## The roles
 
@@ -75,6 +75,7 @@ Confirm the target directory with the client first.
    - `assets/STATUS.md`         → `state/STATUS.md`
    - `assets/settings.json`     → `.claude/settings.json`
    - `assets/env.example`       → `.env.example`
+   - `assets/agents/lead.md`    → `.claude/agents/lead.md`
    - `assets/agents/worker.md`  → `.claude/agents/worker.md`
    - `assets/agents/karen.md`   → `.claude/agents/karen.md`
 
