@@ -79,7 +79,7 @@ case "$origin_url" in
   *github.com*) : ;;
   *) log "ERROR: remote 'origin' must point to github.com (found: '${origin_url:-none}')"; exit 1 ;;
 esac
-gh auth status >/dev/null 2>&1 \
+gh api user --jq '.login' >/dev/null 2>&1 \
   || { log "ERROR: gh not authenticated — run 'gh auth login' or set GH_TOKEN in .env"; exit 1; }
 
 # ---- read policy ----
