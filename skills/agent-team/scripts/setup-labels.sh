@@ -50,11 +50,12 @@ create_label() {  # $1=name  $2=hex-color  $3=description
   fi
 }
 
-create_label "agent-todo"    "E4692A" "Work queued and waiting for the dispatcher"
-create_label "agent-doing"   "1D76DB" "Dispatcher claimed this issue (in-flight)"
-create_label "agent-review"  "F5C518" "Worker done; awaiting karen verification"
-create_label "agent-done"    "0E8A16" "Karen passed; issue closed"
-create_label "agent-backlog" "AAAAAA" "Sequenced task waiting on dependencies"
+create_label "agent-todo"     "E4692A" "Work queued and waiting for the dispatcher"
+create_label "agent-doing"    "1D76DB" "Dispatcher claimed this issue (in-flight)"
+create_label "agent-review"   "F5C518" "Worker done; awaiting karen verification"
+create_label "agent-done"     "0E8A16" "Karen passed; issue closed"
+create_label "agent-backlog"  "AAAAAA" "Sequenced task waiting on dependencies"
+create_label "agent-question" "8B5CF6" "Lead needs client input before proceeding"
 
 echo
 echo "All done. Next steps:"

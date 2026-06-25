@@ -235,12 +235,20 @@ if [ "$is_lead_window" = "true" ] || [ "$force_lead" = "true" ]; then
   backlog_count=$(gh issue list --repo "$REPO" --label "agent-backlog" --state open \
     --json number --jq 'length' 2>/dev/null || echo 0)
 
-  if [ "$inbox_count" -eq 0 ] && [ "${backlog_count:-0}" -eq 0 ] && [ "$force_lead" != "true" ]; then
-    log "lead window: nothing to do (empty inbox, no backlog)"
+  # Fetch open client questions and count answered ones (have comments).
+  question_json=$(gh issue list --repo "$REPO" --label "agent-question" --state open \
+    --json number,title,body,comments 2>/dev/null || echo "[]")
+  question_answered_count=$(printf '%s' "$question_json" \
+    | jq '[.[] | select((.comments | length) > 0)] | length' 2>/dev/null || echo 0)
+  question_total=$(printf '%s' "$question_json" | jq 'length' 2>/dev/null || echo 0)
+
+  if [ "$inbox_count" -eq 0 ] && [ "${backlog_count:-0}" -eq 0 ] \
+     && [ "${question_answered_count:-0}" -eq 0 ] && [ "$force_lead" != "true" ]; then
+    log "lead window: nothing to do (empty inbox, no backlog, no answered questions)"
     exit 0
   fi
 
-  log "LEAD PASS inbox=${inbox_count} backlog=${backlog_count:-0}"
+  log "LEAD PASS inbox=${inbox_count} backlog=${backlog_count:-0} questions=${question_total:-0}(${question_answered_count:-0} answered)"
 
   # Fetch current board state for the lead prompt.
   todo_list=$(gh issue list --repo "$REPO" --label "agent-todo" --state open \
@@ -264,6 +272,21 @@ if [ "$is_lead_window" = "true" ] || [ "$force_lead" = "true" ]; then
     printf 'agent-doing (in flight):\n%s\n\n'                     "$doing_list"
     printf 'agent-review (awaiting karen verification):\n%s\n\n'  "$review_list"
     printf 'agent-backlog (waiting on dependencies):\n%s\n\n'     "$backlog_list"
+
+    # Include client questions with their comments so the lead can process answers.
+    if [ "${question_total:-0}" -gt 0 ]; then
+      printf '## Client questions (agent-question issues)\n\n'
+      printf '%s' "$question_json" | jq -r '.[] |
+        "### #\(.number) \(.title)\n\n" +
+        "Question body:\n\(.body // "(no body)")\n\n" +
+        if ((.comments // []) | length) > 0 then
+          "Client response(s):\n" +
+          ([.comments[] | "- \(.author.login): \(.body)"] | join("\n")) + "\n"
+        else
+          "(awaiting client response — do not block other work on this)\n"
+        end + "\n"' 2>/dev/null || true
+    fi
+
     if [ "$inbox_count" -gt 0 ]; then
       printf '## Inbox (%d item(s))\n\n' "$inbox_count"
       for f in "${fed_items[@]+"${fed_items[@]}"}"; do
@@ -272,7 +295,7 @@ if [ "$is_lead_window" = "true" ] || [ "$force_lead" = "true" ]; then
         printf '\n\n'
       done
     else
-      printf '## Inbox\n\n(empty — check board state and backlog dependencies above)\n\n'
+      printf '## Inbox\n\n(empty — check board state, backlog, and questions above)\n\n'
     fi
   } > "$tmp"
 
