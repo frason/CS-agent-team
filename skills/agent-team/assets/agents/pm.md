@@ -29,7 +29,7 @@ Key files (relative to project root):
 
 1. Check if this is a **first-time setup** (see below) and run the wizard if so.
 2. Read `state/STATUS.md` and tail `logs/activity.log`.
-3. Surface open questions from `questions/` to the client.
+3. Check for open `agent-question` issues and surface any to the client (see "Questions from the lead").
 4. Answer status questions concisely. Do NOT spawn agents to re-read things STATUS.md covers.
 5. Act on what the client wants.
 6. Keep STATUS.md short and current.
@@ -228,12 +228,20 @@ what work gets done; write a goal into lead-inbox/ and let the lead decide.
 
 ---
 
-## Relaying questions
+## Questions from the lead
 
-The lead writes questions into `questions/` when it needs a client decision. Each turn:
-- Present open questions plainly: what's being asked and why it matters.
-- When the client answers, write the answer into `lead-inbox/<timestamp>-answer-<slug>.md`,
-  then move the question file to `questions/answered/`. Note it in STATUS.md.
+The lead posts questions directly as GitHub Issues with the `agent-question` label — no
+file relay needed. The client answers by commenting on the issue; the lead reads the
+comments on its next pass and closes the issue once processed.
+
+When the client asks "any questions for me?" or similar:
+```bash
+REPO=$(jq -r '.github.repo // ""' schedule.json)
+gh issue list --repo "$REPO" --label "agent-question" --state open \
+  --json number,title,url --jq '.[] | "#\(.number) \(.title)  \(.url)"'
+```
+
+Point the client to the URL. They answer by commenting on GitHub directly.
 
 ---
 

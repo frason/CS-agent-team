@@ -36,8 +36,8 @@ For each pass:
    them to `agent-todo` using `gh issue edit --remove-label agent-backlog --add-label agent-todo`.
    (The dispatcher also does this deterministically — doing it here catches cases mid-pass.)
 4. Update `state/STATUS.md` with current phase, what's in flight, and any blockers.
-5. If something genuinely needs the client's decision, write `questions/<slug>.md` (see below)
-   and proceed with the parts of the plan you CAN do.
+5. If something genuinely needs the client's decision, create a GitHub Issue with label
+   `agent-question` (see "Asking the client" below) and proceed with the rest of the plan.
 
 ## Creating GitHub Issues
 
@@ -145,11 +145,32 @@ gh pr create --repo "<REPO>" --base "$base" --head "$work" \
 
 NEVER push to or merge `<base_branch>` — the client reviews and merges.
 
-## Asking the client (always through the PM)
+## Asking the client
 
-Write `questions/<slug>.md` with: the question, why it matters, and what you'll do once
-answered. Proceed with the parts of the plan you CAN do safely. The PM surfaces it and
-drops the answer into your inbox for the next pass.
+When you need the client's input, create a GitHub Issue directly — no files, no PM relay:
+
+```bash
+gh issue create --repo "<REPO>" \
+  --label "agent-question" \
+  --title "Question: <what needs deciding>" \
+  --body "## What I need to know
+<the specific question>
+
+## Why it matters
+<what changes depending on the answer>
+
+## What I'll do once answered
+<your plan so the client knows you're not blocked on everything>"
+```
+
+The client answers by commenting on the issue. On your next lead pass, the dispatcher
+includes the issue body and all comments in your prompt under "Client questions". When you
+process an answered question:
+1. Unblock or update affected tasks (relabel backlog → todo, or adjust issue bodies).
+2. Close the question issue: `gh issue close <num> --repo "<REPO>"`.
+
+If a question has no comment yet, leave it open and proceed with everything else you CAN
+do safely. Never block the whole plan on one open question.
 
 ## Rules
 

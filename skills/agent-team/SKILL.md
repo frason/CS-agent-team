@@ -28,14 +28,18 @@ low and paced so a long session never burns the rolling 5-hour limit all at once
 - **Each tick does at most ONE thing** (priority: lead → karen → worker). Never concurrent.
 - **Labels carry state** (atomic swap prevents double-dispatch):
   ```
-  agent-todo    → queued, not yet claimed
-  agent-doing   → dispatcher claimed it (in-flight)
-  agent-review  → worker done; awaiting karen
-  agent-done    → karen passed; issue closed
-  agent-backlog → sequenced task waiting on dependencies (created by lead)
+  agent-todo     → queued, not yet claimed
+  agent-doing    → dispatcher claimed it (in-flight)
+  agent-review   → worker done; awaiting karen
+  agent-done     → karen passed; issue closed
+  agent-backlog  → sequenced task waiting on dependencies (created by lead)
+  agent-question → lead needs client input; client answers by commenting
   ```
 - **Backlog promotion**: the dispatcher checks `depends_on:` in every `agent-backlog` issue each
   lead-window tick and relabels to `agent-todo` once all referenced issues are CLOSED.
+- **Client questions go through GitHub**: the lead creates `agent-question` issues instead of
+  writing files. The client answers by commenting; the lead reads comments on its next pass
+  and closes the issue once processed. No PM relay needed.
 - **FAILED karen verdict** cycles the issue back to `agent-todo` with a comment explaining
   what needs fixing, so the worker retries on the next eligible tick.
 
@@ -95,8 +99,8 @@ Alternatively, run the steps manually:
    ```bash
    bash scripts/setup-labels.sh
    ```
-   Creates `agent-todo`, `agent-doing`, `agent-review`, `agent-done`, `agent-backlog`
-   on the repo and scaffolds `lead-inbox/done/`.
+   Creates all 6 labels — `agent-todo`, `agent-doing`, `agent-review`, `agent-done`,
+   `agent-backlog`, `agent-question` — on the repo and scaffolds `lead-inbox/done/`.
 
 5. **Authenticate cron to the subscription**:
    ```bash
@@ -132,6 +136,8 @@ if a worker stalls).
   next `lead_windows` tick, break it into GitHub Issues, and start sequencing work automatically.
 - **Queue a task manually** — create a GitHub Issue and add the `agent-todo` label. The
   dispatcher claims it on the next non-lead tick.
+- **Answer a lead question** — the lead posts questions as GitHub Issues with `agent-question`.
+  Comment on the issue directly; the lead reads your comment on its next pass and closes it.
 - **Check status** — watch issue labels and comments on GitHub. The dispatcher posts the worker
   summary and karen's verdict as comments before changing labels.
 - **Rolling budget** — `state/STATUS.md` shows a 5h rolling spend bar when

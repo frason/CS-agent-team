@@ -21,11 +21,12 @@ The principle throughout is **token frugality + steady pacing**: cheap models fo
 - **Labels carry state**:
 
 ```
-agent-todo    → queued, not yet claimed
-agent-doing   → dispatcher claimed it (prevents double-dispatch)
-agent-review  → worker done; awaiting karen
-agent-done    → karen passed; issue closed
-agent-backlog → waiting on dependencies (lead creates these for sequenced work)
+agent-todo     → queued, not yet claimed
+agent-doing    → dispatcher claimed it (prevents double-dispatch)
+agent-review   → worker done; awaiting karen
+agent-done     → karen passed; issue closed
+agent-backlog  → waiting on dependencies (lead creates these for sequenced work)
+agent-question → lead needs client input; client answers by commenting on the issue
 ```
 
 ```
@@ -106,6 +107,7 @@ The skill files live under `skills/agent-team/`. Run these from that folder:
 
 - **Delegate a goal** — drop a `.md` file into `lead-inbox/`. The lead picks it up on the next `lead_windows` tick and creates all the GitHub Issues.
 - **Queue a task manually** — create a GitHub Issue and add the `agent-todo` label. The dispatcher claims it on the next non-lead tick.
+- **Answer a lead question** — the lead posts questions as `agent-question` GitHub Issues. Comment on the issue directly; the lead reads the comment on its next pass and closes it.
 - **Check status** — watch issue labels and comments on GitHub. The dispatcher posts worker summaries and karen's verdict as comments before changing labels.
 - **Force a lead run** — `scripts/dispatcher.sh --force-lead`. Bypasses `active_hours` and the soft budget throttle.
 - **Force a worker run** — `scripts/dispatcher.sh --force-worker` (or `--force-worker <N>` for a specific issue).

@@ -31,8 +31,8 @@ say "Project root: $ROOT"
 say
 
 # 1) Runtime directory tree.
-mkdir -p "$ROOT/state" "$ROOT/logs" "$ROOT/.claude/agents" "$ROOT/lead-inbox/done" "$ROOT/questions/answered"
-say "✓ runtime directories (state/, logs/, lead-inbox/done/, questions/answered/, .claude/agents/)"
+mkdir -p "$ROOT/state" "$ROOT/logs" "$ROOT/.claude/agents" "$ROOT/lead-inbox/done"
+say "✓ runtime directories (state/, logs/, lead-inbox/done/, .claude/agents/)"
 
 # 2) Copy asset templates into place — never clobber a customized file.
 copy_once() {  # $1 = src, $2 = dest
