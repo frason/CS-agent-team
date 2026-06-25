@@ -11,7 +11,7 @@
   "telemetry": {
     "show_rolling_budget_in_status": true
   },
-  "active_hours": { "start": 8, "end": 20 },
+  "active_hours": { "start": 0, "end": 24 },
   "github": {
     "repo": "",
     "base_branch": "main",
