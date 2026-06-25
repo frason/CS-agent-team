@@ -1,20 +1,21 @@
 ---
 name: agent-team
-description: Set up and operate a background "agent team" for Claude Code — a cron heartbeat dispatches worker agents one at a time against tasks tracked as GitHub Issues, and a verifier (karen) audits each finished task before closing it. Paces token use to fit a Claude subscription's rolling 5-hour limit. Use this skill whenever the client wants to delegate coding or side-project work to background agents, run staggered subagents with cron, set up an orchestrator/worker/verifier team, keep working through long sessions without hitting the 5-hour usage limit, or bootstrap, configure, or adjust this kind of delegated agent system — even if they don't name it explicitly.
+description: Set up and operate a background "agent team" for Claude Code — a lead decomposes goals into GitHub Issues, worker agents execute them one at a time on a stagger, and a verifier (karen) audits each finished task before closing it. Paces token use to fit a Claude subscription's rolling 5-hour limit. Use this skill whenever the client wants to delegate coding or side-project work to background agents, run staggered subagents with cron, set up a lead/worker/verifier team, keep working through long sessions without hitting the 5-hour usage limit, or bootstrap, configure, or adjust this kind of delegated agent system — even if they don't name it explicitly.
 ---
 
 # Agent Team
 
-A background delegation system for Claude Code. Work is tracked as **GitHub Issues**. A cron
-**heartbeat** runs worker agents one at a time on a stagger. A **verifier** (karen) audits each
-finished task and closes the issue on pass. Everything runs on the client's Claude
-**subscription** (no API billing), and the design keeps token use low and paced so a long
-session never burns the rolling 5-hour limit all at once.
+A background delegation system for Claude Code. Drop a goal into `lead-inbox/` — a **lead**
+decomposes it into GitHub Issues, **worker** agents execute them one at a time on a stagger,
+and **karen** (the verifier) audits each finished task and closes the issue on pass. Everything
+runs on the client's Claude **subscription** (no API billing), and the design keeps token use
+low and paced so a long session never burns the rolling 5-hour limit all at once.
 
 ## The roles
 
 | Role   | Runs | Model | Job |
 |--------|------|-------|-----|
+| PM     | interactive (client opens it) | haiku | First-time setup, status reporting, scheduling, relaying lead questions. The only role the client talks to directly. |
 | Lead   | scheduled, `lead_windows` | sonnet | Drains `lead-inbox/`, decomposes goals into GitHub Issues, manages sequencing via `depends_on`. |
 | Worker | scheduled, staggered | haiku | Executes one `agent-todo` issue; writes summary to `state/worker_output.txt`. |
 | Karen  | scheduled, gated | sonnet | Independently verifies finished work; writes verdict to `state/verdict.txt`; never edits source. |
@@ -59,14 +60,19 @@ cron ─10m─▶ dispatcher ─────────────────
 
 ## Setting it up
 
-Run these steps in the client's project (or a dedicated control directory).
-Confirm the target directory with the client first.
+**Easiest path (Claude Code):** After copying the skill files (step 2 below), open the PM
+agent and say "set up the agent team". It detects what's missing and walks through token,
+GitHub, labels, and cron interactively — no terminal editing required.
 
-1. **Install dependencies**:
-   - `brew install jq`
-   - `brew install gh` then `gh auth login`
+Alternatively, run the steps manually:
 
-2. **Copy the bundled files** from this skill into the project (or run `scripts/setup.sh`):
+1. **Install dependencies** (if not already present):
+   ```bash
+   brew install jq gh
+   gh auth login
+   ```
+
+2. **Copy the bundled files** into the project (or run `scripts/setup.sh`):
    - `scripts/dispatcher.sh`    → `scripts/dispatcher.sh`   (`chmod +x`)
    - `scripts/budget_check.sh`  → `scripts/budget_check.sh` (`chmod +x`)
    - `scripts/setup-labels.sh`  → `scripts/setup-labels.sh` (`chmod +x`)
@@ -75,6 +81,8 @@ Confirm the target directory with the client first.
    - `assets/STATUS.md`         → `state/STATUS.md`
    - `assets/settings.json`     → `.claude/settings.json`
    - `assets/env.example`       → `.env.example`
+   - `assets/agents/pm.md`      → `.claude/agents/pm.md`
+   - `assets/agents/lead.md`    → `.claude/agents/lead.md`
    - `assets/agents/worker.md`  → `.claude/agents/worker.md`
    - `assets/agents/karen.md`   → `.claude/agents/karen.md`
 
@@ -87,19 +95,23 @@ Confirm the target directory with the client first.
    ```bash
    bash scripts/setup-labels.sh
    ```
-   This creates `agent-todo`, `agent-doing`, `agent-review`, `agent-done`, and `agent-backlog`
-   on the repo, and scaffolds `lead-inbox/done/`.
+   Creates `agent-todo`, `agent-doing`, `agent-review`, `agent-done`, `agent-backlog`
+   on the repo and scaffolds `lead-inbox/done/`.
 
-5. **Authenticate cron to the subscription** (not API):
+5. **Authenticate cron to the subscription**:
    ```bash
-   claude setup-token
+   claude setup-token   # follow the prompts; copy the token it prints
    ```
-   Copy `.env.example` to `.env`, paste the token into `CLAUDE_CODE_OAUTH_TOKEN`, and set
+   Copy `.env.example` to `.env`, paste `CLAUDE_CODE_OAUTH_TOKEN=<token>`, and set
    `PATH` to where `claude`, `jq`, and `gh` live (`which claude; which jq; which gh`).
 
-6. **Add the heartbeat to cron** (`crontab -e`) with absolute paths:
-   ```
-   */10 * * * * /ABS/PATH/scripts/dispatcher.sh >> /ABS/PATH/logs/dispatcher.log 2>&1
+6. **Add the heartbeat to cron** (non-interactive — no editor needed):
+   ```bash
+   DISP="$(pwd)/scripts/dispatcher.sh"
+   LOG="$(pwd)/logs/dispatcher.log"
+   ( crontab -l 2>/dev/null | grep -Fv dispatcher.sh
+     echo "*/10 * * * * $DISP >> $LOG 2>&1" ) | crontab -
+   crontab -l | grep dispatcher.sh   # confirm it's there
    ```
 
 7. **Test once by hand** before trusting cron:
@@ -187,6 +199,7 @@ if a worker stalls).
 - `assets/STATUS.md`        — status board template.
 - `assets/settings.json`    — permission allowlist for `.claude/settings.json`.
 - `assets/env.example`      — cron environment template.
-- `assets/agents/lead.md`   — lead agent definition (planning + GitHub Issue creation).
-- `assets/agents/worker.md` — worker agent definition.
-- `assets/agents/karen.md`  — karen (verifier) agent definition.
+- `assets/agents/pm.md`     — PM agent (client-facing: setup wizard, status, scheduling).
+- `assets/agents/lead.md`   — lead agent (planning + GitHub Issue creation).
+- `assets/agents/worker.md` — worker agent.
+- `assets/agents/karen.md`  — karen (verifier) agent.
