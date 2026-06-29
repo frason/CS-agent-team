@@ -346,15 +346,20 @@ Instructions:
 5. Return a 2–3 line log summary: counts, overall verdict, and the most critical gap.
 PROMPT
 
-  run_agent karen "$karen_model" "$tmp" || true
+  karen_ok=true
+  run_agent karen "$karen_model" "$tmp" || karen_ok=false
   rm -f "$tmp"
 
-  # Guard: if karen produced no verdict, cycle back rather than hanging on agent-review.
+  # Guard: if karen produced no verdict (crash or silent failure), cycle back.
   if [ ! -f "$verdict_file" ]; then
-    log "  karen did not write verdict.txt — cycling #$iss_num back to agent-todo"
-    gh issue comment "$iss_num" --repo "$REPO" \
-      --body "⚠️ **Verifier did not produce a verdict.** Cycling back to \`agent-todo\` for retry." \
-      >/dev/null 2>&1 || true
+    if [ "$karen_ok" = "false" ]; then
+      log "  karen run failed (rc non-zero) — cycling #$iss_num back to agent-todo"
+      msg="⚠️ **Verifier run failed** (claude exited non-zero). Cycling back to \`agent-todo\` — check \`logs/dispatcher.log\` for the error."
+    else
+      log "  karen did not write verdict.txt — cycling #$iss_num back to agent-todo"
+      msg="⚠️ **Verifier did not produce a verdict.** Cycling back to \`agent-todo\` for retry."
+    fi
+    gh issue comment "$iss_num" --repo "$REPO" --body "$msg" >/dev/null 2>&1 || true
     gh issue edit "$iss_num" --repo "$REPO" \
       --remove-label "agent-review" --add-label "agent-todo" >/dev/null 2>&1 || true
     exit 0
@@ -442,7 +447,16 @@ Instructions:
 Your summary will be posted to the issue and then independently verified by karen.
 PROMPT
 
-run_agent worker "$worker_model" "$tmp" || true
+if ! run_agent worker "$worker_model" "$tmp"; then
+  rm -f "$tmp"
+  log "  worker failed — cycling #$iss_num back to agent-todo"
+  gh issue comment "$iss_num" --repo "$REPO" \
+    --body "⚠️ **Worker run failed** (claude exited non-zero). Cycling back to \`agent-todo\` — check \`logs/dispatcher.log\` for the error." \
+    >/dev/null 2>&1 || true
+  gh issue edit "$iss_num" --repo "$REPO" \
+    --remove-label "agent-doing" --add-label "agent-todo" >/dev/null 2>&1 || true
+  exit 0
+fi
 rm -f "$tmp"
 
 if [ -f "$output_file" ]; then
