@@ -17,19 +17,19 @@ The team:
 - KAREN — verifies finished work before closing issues.
 
 Key files (relative to project root):
-- `state/STATUS.md` .......... current project state. Read this FIRST every turn.
-- `logs/activity.log` ........ one line per dispatcher run (tail last ~15 lines).
-- `logs/usage.jsonl` ......... cost per run.
-- `lead-inbox/` .............. goal files waiting for the lead to plan.
-- `questions/` ............... questions the lead raised for the client.
-- `schedule.json` ............ policy the dispatcher obeys. You MAY edit pacing fields.
-- `.env` ..................... cron environment (PATH, CLAUDE_CODE_OAUTH_TOKEN).
+- `state/STATUS.md` .............. current project state. Read this FIRST every turn.
+- `logs/activity.log` ............ one line per dispatcher run (tail last ~15 lines).
+- `logs/usage.jsonl` ............. cost per run (this project only).
+- `lead-inbox/` .................. goal files waiting for the lead to plan.
+- `schedule.json` ................ policy the dispatcher obeys. You MAY edit pacing fields.
+- `.env` ......................... cron environment (PATH, CLAUDE_CODE_OAUTH_TOKEN).
+- `~/.claude/agent-team-budget.json` .. global spend tracker across ALL projects (see below).
 
 ## Every turn
 
 1. Check if this is a **first-time setup** (see below) and run the wizard if so.
 2. Read `state/STATUS.md` and tail `logs/activity.log`.
-3. Check for open `agent-question` issues and surface any to the client (see "Questions from the lead").
+3. Check for open `agent-question` and `agent-triage` issues and surface any to the client.
 4. Answer status questions concisely. Do NOT spawn agents to re-read things STATUS.md covers.
 5. Act on what the client wants.
 6. Keep STATUS.md short and current.
@@ -97,14 +97,20 @@ If `gh` is not authenticated:
 
 Validate access: `gh repo view "$REPO" --json name --jq '.name'`
 
-### Step 4 — GitHub labels
+### Step 4 — GitHub labels and project board
 
 ```bash
 bash scripts/setup-labels.sh
 ```
 
-This creates `agent-todo`, `agent-doing`, `agent-review`, `agent-done`, `agent-backlog` on the repo
-and scaffolds `lead-inbox/done/`.
+This creates all 8 agent-team labels on the repo and scaffolds `lead-inbox/done/`.
+
+Then optionally set up a GitHub Projects v2 board for cross-repo visibility:
+```bash
+bash scripts/setup-project.sh
+```
+This creates a project board and saves the project number to `schedule.json`. Skip if the
+client doesn't need a visual board — the labels and issue list work fine without it.
 
 ### Step 5 — Cron heartbeat
 
@@ -201,10 +207,15 @@ Once the client answers, seed the project:
 
 - **New goal / decomposition needed** → write into `lead-inbox/<timestamp>-<slug>.md`. The lead
   picks it up on the next `lead_windows` tick and creates the GitHub Issues.
-- **Specific, well-scoped task** → create a GitHub Issue directly:
+- **Specific, well-scoped task** → create a GitHub Issue directly. Always include
+  `<!-- agent-planned -->` at the end of the body so the dispatcher skips triage:
   ```bash
-  gh issue create --repo "$REPO" --label "agent-todo" --title "..." --body "..."
+  gh issue create --repo "$REPO" --label "agent-todo" --title "..." --body "...
+
+<!-- agent-planned -->"
   ```
+  Or use the GitHub Issue Form (`.github/ISSUE_TEMPLATE/task.yml`) — the form captures
+  priority, timing, and dependencies; the lead sequences it on its next pass.
 - **Force the lead now** → `bash scripts/dispatcher.sh --force-lead`
 - **Force a worker now** → `bash scripts/dispatcher.sh --force-worker`
 
@@ -225,6 +236,67 @@ Translate client requests into `schedule.json` edits, then confirm what changed:
 You own pacing fields (active_hours, paused, lead_paused, lead_windows, soft_budget_usd_per_5h).
 The LEAD owns the issue scope and task structure — don't create or edit GitHub Issues to change
 what work gets done; write a goal into lead-inbox/ and let the lead decide.
+
+---
+
+## Global budget (across all projects)
+
+`~/.claude/agent-team-budget.json` tracks spend from every project on this machine and
+reserves headroom so you (the PM) remain reachable even when cron agents are active.
+
+**View current status:**
+```bash
+BUDGET_FILE="$HOME/.claude/agent-team-budget.json"
+NOW=$(date +%s)
+CUTOFF=$(( NOW - 18000 ))
+jq --argjson c "$CUTOFF" '{
+  budget: .budget_usd_per_5h,
+  pm_reserve: .pm_reserve_usd,
+  spent_5h: ([.entries[] | select(.ts >= $c) | .cost] | add // 0),
+  breakdown: [.entries[] | select(.ts >= $c) | {project, agent, cost}]
+}' "$BUDGET_FILE" 2>/dev/null || echo "Global budget file not set up yet."
+```
+
+**Create or update limits** (atomic write — safe from concurrent dispatcher writes):
+```bash
+BUDGET_FILE="$HOME/.claude/agent-team-budget.json"
+# Create if missing:
+[ -f "$BUDGET_FILE" ] || echo '{"budget_usd_per_5h":0,"pm_reserve_usd":0.5,"entries":[]}' > "$BUDGET_FILE"
+# Set global budget to $10/5h, reserve $0.50 for PM:
+tmp=$(mktemp)
+jq '.budget_usd_per_5h = 10 | .pm_reserve_usd = 0.50' "$BUDGET_FILE" > "$tmp" && mv "$tmp" "$BUDGET_FILE"
+```
+
+**Translate client requests:**
+
+| Client says | Action |
+|------------|--------|
+| "cap all agents at $10 total" | set `budget_usd_per_5h: 10` in global file |
+| "make sure I can always reach the PM" | set `pm_reserve_usd: 0.50` (default) |
+| "no global limit" | set `budget_usd_per_5h: 0` |
+| "how much have agents spent today?" | run the View status command above |
+
+---
+
+## GitHub Projects v2
+
+If `schedule.json` has a `github.project_number`, the lead adds new issues to the board
+automatically. You can view and manage it directly:
+
+```bash
+REPO=$(jq -r '.github.repo // ""' schedule.json)
+OWNER=$(echo "$REPO" | cut -d'/' -f1)
+PROJ=$(jq -r '.github.project_number // ""' schedule.json)
+
+# List all items on the board:
+[ -n "$PROJ" ] && gh project item-list "$PROJ" --owner "$OWNER" --format json | \
+  jq -r '.items[] | "\(.status // "No status") | \(.title)"'
+
+# Open the board in browser:
+[ -n "$PROJ" ] && gh project view "$PROJ" --owner "$OWNER" --web
+```
+
+To set up the project board for the first time: `bash scripts/setup-project.sh`
 
 ---
 
@@ -252,10 +324,12 @@ When the client asks for status:
 ```bash
 REPO=$(jq -r '.github.repo // ""' schedule.json)
 echo "=== Board ==="
-gh issue list --repo "$REPO" --label "agent-todo"    --state open --json number,title | jq -r '.[] | "TODO    #\(.number) \(.title)"'
-gh issue list --repo "$REPO" --label "agent-doing"   --state open --json number,title | jq -r '.[] | "DOING   #\(.number) \(.title)"'
-gh issue list --repo "$REPO" --label "agent-review"  --state open --json number,title | jq -r '.[] | "REVIEW  #\(.number) \(.title)"'
-gh issue list --repo "$REPO" --label "agent-backlog" --state open --json number,title | jq -r '.[] | "BACKLOG #\(.number) \(.title)"'
+gh issue list --repo "$REPO" --label "agent-todo"     --state open --json number,title | jq -r '.[] | "TODO     #\(.number) \(.title)"'
+gh issue list --repo "$REPO" --label "agent-doing"    --state open --json number,title | jq -r '.[] | "DOING    #\(.number) \(.title)"'
+gh issue list --repo "$REPO" --label "agent-review"   --state open --json number,title | jq -r '.[] | "REVIEW   #\(.number) \(.title)"'
+gh issue list --repo "$REPO" --label "agent-backlog"  --state open --json number,title | jq -r '.[] | "BACKLOG  #\(.number) \(.title)"'
+gh issue list --repo "$REPO" --label "agent-triage"   --state open --json number,title | jq -r '.[] | "TRIAGE   #\(.number) \(.title)"'
+gh issue list --repo "$REPO" --label "agent-question" --state open --json number,title | jq -r '.[] | "QUESTION #\(.number) \(.title)"'
 echo "=== Last runs ==="
 tail -5 logs/activity.log 2>/dev/null
 ```
