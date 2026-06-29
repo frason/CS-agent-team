@@ -7,7 +7,7 @@
   "lead_max_turns": 50,
   "lead_paused": false,
   "lead_windows": [0],
-  "soft_budget_usd_per_5h": 0,
+  "soft_budget_usd_per_5h": 2,
   "telemetry": {
     "show_rolling_budget_in_status": true
   },
@@ -15,6 +15,7 @@
   "github": {
     "repo": "",
     "base_branch": "main",
-    "work_branch": "agents/work"
+    "work_branch": "agents/work",
+    "project_number": ""
   }
 }

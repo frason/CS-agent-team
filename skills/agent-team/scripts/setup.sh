@@ -51,6 +51,14 @@ if [ -d "$ASSETS" ]; then
       copy_once "$a" "$ROOT/.claude/agents/$(basename "$a")"
     done
   fi
+  # Copy GitHub Issue Form template (enables structured task submission from the GitHub UI).
+  if [ -d "$ASSETS/.github/ISSUE_TEMPLATE" ]; then
+    mkdir -p "$ROOT/.github/ISSUE_TEMPLATE"
+    for t in "$ASSETS/.github/ISSUE_TEMPLATE"/*; do
+      [ -e "$t" ] || continue
+      copy_once "$t" "$ROOT/.github/ISSUE_TEMPLATE/$(basename "$t")"
+    done
+  fi
 else
   say "  ! assets/ not found next to scripts/ — skipping template copy"
 fi
@@ -127,10 +135,16 @@ if [ -z "$REPO" ]; then
   say
 else
   say "GitHub repo: $REPO"
-  if [ "$missing_deps" = "false" ] && ask "Create/update the four agent-team labels on $REPO now?" y; then
+  if [ "$missing_deps" = "false" ] && ask "Create/update the agent-team labels on $REPO now?" y; then
     bash "$SCRIPT_DIR/setup-labels.sh"
   else
     say "  Skipped. Run 'bash scripts/setup-labels.sh' after setting github.repo."
+  fi
+  say
+  if [ "$missing_deps" = "false" ] && ask "Create a GitHub Projects v2 board for cross-repo visibility? (optional)" n; then
+    bash "$SCRIPT_DIR/setup-project.sh"
+  else
+    say "  Skipped. Run 'bash scripts/setup-project.sh' later if you want a project board."
   fi
   say
 fi

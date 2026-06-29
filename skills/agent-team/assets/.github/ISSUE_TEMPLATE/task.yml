@@ -1,0 +1,46 @@
+name: Agent Task
+description: Submit a task to the background agent team
+labels: ["agent-todo"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What needs to be done?
+      description: One clear sentence describing the task.
+      placeholder: "Add dark mode support to the settings panel"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How urgent is this relative to other work?
+      options:
+        - normal
+        - high
+        - urgent
+        - low
+    validations:
+      required: true
+
+  - type: input
+    id: timing
+    attributes:
+      label: Timing
+      description: "When should this land? e.g. 'before the v2 release', 'this week', 'whenever'"
+      placeholder: "whenever"
+
+  - type: input
+    id: depends_on
+    attributes:
+      label: Depends on
+      description: "Issue numbers this must follow (e.g. #12, #15). Leave blank if none."
+      placeholder: ""
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: "Acceptance criteria, constraints, or context the agent needs. Optional but helpful."
+      placeholder: "- Must work on mobile\n- Use the existing ThemeContext, don't create a new one"
