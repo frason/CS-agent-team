@@ -35,6 +35,7 @@ low and paced so a long session never burns the rolling 5-hour limit all at once
   agent-backlog  → sequenced task waiting on dependencies (created by lead)
   agent-triage   → user-entered issue awaiting lead triage (priority/timing)
   agent-question → lead needs client input; client answers by commenting
+  agent-blocked  → exceeded max_worker_attempts; needs manual or lead intervention
   ```
 - **Backlog promotion**: the dispatcher checks `depends_on:` in every `agent-backlog` issue each
   lead-window tick and relabels to `agent-todo` once all referenced issues are CLOSED.
@@ -188,6 +189,7 @@ if a worker stalls).
 | `lead_paused` | `true` skips the lead pass without halting workers/karen. |
 | `lead_windows` | List of minute values when the lead runs (default `[0]` — top of every hour). E.g. `[0, 30]` runs at :00 and :30. |
 | `soft_budget_usd_per_5h` | Per-project self-throttle: skip ticks once trailing-5h spend hits this. `0` disables. |
+| `max_worker_attempts` | How many times a worker may attempt an issue before it is moved to `agent-blocked`. Default `3`. |
 | `telemetry.show_rolling_budget_in_status` | `true` updates `state/STATUS.md` with a spend bar on every tick. |
 | `active_hours` | Only run between `start` and `end` (24-hour clock). |
 | `github.repo` | Required. GitHub repo as `owner/repo`. |

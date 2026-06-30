@@ -10,6 +10,7 @@
 #   agent-backlog  → sequenced task waiting on dependencies (created by lead)
 #   agent-triage   → user-entered issue awaiting lead priority/timing triage
 #   agent-question → lead needs client input; client answers by commenting
+#   agent-blocked  → exceeded max_worker_attempts; needs manual intervention or lead attention
 #
 # Add ONE line to your crontab (absolute paths required):
 #   */10 * * * * /ABS/PATH/scripts/dispatcher.sh >> /ABS/PATH/logs/dispatcher.log 2>&1
@@ -98,14 +99,15 @@ REPO=$(jq -r '.github.repo // ""' "$SCHEDULE")
 now_epoch=$(date +%s)
 hour=$(( 10#$(date +%H) ))
 minute=$(( 10#$(date +%M) ))
-max_turns=$(     jq -r '.max_turns               // 25'      "$SCHEDULE")
-worker_model=$(  jq -r '.worker_model            // "haiku"' "$SCHEDULE")
-karen_model=$(   jq -r '.karen_model             // "sonnet"' "$SCHEDULE")
-lead_model=$(    jq -r '.lead_model              // "sonnet"' "$SCHEDULE")
-lead_max_turns=$(jq -r '.lead_max_turns          // 50'      "$SCHEDULE")
-lead_paused=$(   jq -r '.lead_paused             // false'   "$SCHEDULE")
-soft_budget=$(   jq -r '.soft_budget_usd_per_5h  // 0'       "$SCHEDULE")
-project_num=$(   jq -r '.github.project_number  // ""'       "$SCHEDULE")
+max_turns=$(        jq -r '.max_turns               // 25'      "$SCHEDULE")
+worker_model=$(     jq -r '.worker_model            // "haiku"' "$SCHEDULE")
+karen_model=$(      jq -r '.karen_model             // "sonnet"' "$SCHEDULE")
+lead_model=$(       jq -r '.lead_model              // "sonnet"' "$SCHEDULE")
+lead_max_turns=$(   jq -r '.lead_max_turns          // 50'      "$SCHEDULE")
+lead_paused=$(      jq -r '.lead_paused             // false'   "$SCHEDULE")
+soft_budget=$(      jq -r '.soft_budget_usd_per_5h  // 0'       "$SCHEDULE")
+max_worker_attempts=$(jq -r '.max_worker_attempts   // 3'       "$SCHEDULE")
+project_num=$(      jq -r '.github.project_number  // ""'       "$SCHEDULE")
 
 # ---- refresh the rolling-budget summary in STATUS.md (token-free, gated) ----
 if [ "$(jq -r '.telemetry.show_rolling_budget_in_status // false' "$SCHEDULE")" = "true" ]; then
@@ -545,6 +547,29 @@ iss_num=$(  echo "$todo_json" | jq -r '.number')
 iss_title=$(echo "$todo_json" | jq -r '.title')
 iss_body=$( echo "$todo_json" | jq -r '.body // ""')
 log "WORK issue #$iss_num: $iss_title"
+
+# ---- cycle detection: block issues that have exhausted retry attempts ----
+# Count "## Worker Summary" (worker completed) + "⚠️ **Worker" (worker crashed) comments.
+# Each represents one full worker attempt, regardless of outcome.
+attempt_count=$(gh issue view "$iss_num" --repo "$REPO" --json comments \
+  --jq '[.comments[].body | select(startswith("## Worker Summary") or startswith("⚠️ **Worker"))] | length' \
+  2>/dev/null || echo 0)
+if [ "$(jq -n --argjson a "${attempt_count:-0}" --argjson m "$max_worker_attempts" '$a >= $m')" = "true" ]; then
+  log "  issue #$iss_num: ${attempt_count} attempt(s) >= limit ${max_worker_attempts} — blocking"
+  gh issue edit "$iss_num" --repo "$REPO" \
+    --remove-label "agent-todo" --add-label "agent-blocked" >/dev/null 2>&1 || true
+  gh issue comment "$iss_num" --repo "$REPO" \
+    --body "⛔ **Blocked after ${attempt_count} failed attempt(s)** (limit: ${max_worker_attempts}).
+
+The lead will review this on its next pass. It may need to be:
+- Decomposed into smaller subtasks with clearer acceptance criteria
+- Unblocked by completing a dependency first
+- Assigned additional context or examples
+
+To retry manually: remove the \`agent-blocked\` label and add \`agent-todo\`." \
+    >/dev/null 2>&1 || true
+  exit 0
+fi
 
 check_global_budget
 

@@ -57,6 +57,7 @@ create_label "agent-done"     "0E8A16" "Karen passed; issue closed"
 create_label "agent-backlog"  "AAAAAA" "Sequenced task waiting on dependencies"
 create_label "agent-triage"   "BFD4F2" "User-entered issue awaiting lead triage"
 create_label "agent-question" "8B5CF6" "Lead needs client input before proceeding"
+create_label "agent-blocked"  "D93F0B" "Exceeded retry limit — needs lead attention or manual intervention"
 
 echo
 echo "All done. Next steps:"
