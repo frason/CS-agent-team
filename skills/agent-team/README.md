@@ -51,6 +51,7 @@ drop goal ──▶ lead-inbox/     You ──▶ GitHub Issue (agent-todo)
 | `agent-backlog` | Sequenced task waiting on `depends_on:` issues to close. |
 | `agent-triage` | User-submitted issue awaiting lead priority/timing questions. |
 | `agent-question` | Lead needs your input; answer by commenting on the issue. |
+| `agent-blocked` | Exceeded retry limit. Needs manual attention or lead decomposition. |
 
 ---
 
@@ -154,6 +155,7 @@ Edit `schedule.json` (or ask the PM):
 | Lead runs at :00 and :30 | `"lead_windows": [0, 30]` |
 | Per-project spend cap | `"soft_budget_usd_per_5h": 5` |
 | Only run 9–5 | `"active_hours": {"start": 9, "end": 17}` |
+| Change retry limit | `"max_worker_attempts": 5` |
 
 ### Global budget (across all projects)
 
@@ -224,6 +226,7 @@ board (update `project_number` to the same value in each repo's `schedule.json`)
 | `github.base_branch` | `main` | Branch agents never push to directly. |
 | `github.work_branch` | `agents/work` | Branch for staging verified work before PRs. |
 | `github.project_number` | _(optional)_ | Projects v2 board number. Set by `setup-project.sh`. |
+| `max_worker_attempts` | `3` | Max worker attempts before moving issue to `agent-blocked`. |
 
 ---
 
