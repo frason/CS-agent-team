@@ -175,6 +175,9 @@ if a worker stalls).
 - **Cap spend (all projects)** — edit `~/.claude/agent-team-budget.json`:
   `{"budget_usd_per_5h": 10, "pm_reserve_usd": 0.5, "entries": []}`. When remaining budget
   falls to `pm_reserve_usd`, all cron agents pause so the PM stays reachable. `budget = 0` disables.
+- **Lead cost control** — a capable Lead model run frequently adds up (observed ~$3/pass
+  for a strong model). Keep `lead_windows` sparse (e.g. `[0]` for hourly, not every 10 min)
+  unless the project genuinely needs fast triage turnaround.
 
 ## schedule.json reference
 
@@ -190,6 +193,8 @@ if a worker stalls).
 | `lead_windows` | List of minute values when the lead runs (default `[0]` — top of every hour). E.g. `[0, 30]` runs at :00 and :30. |
 | `soft_budget_usd_per_5h` | Per-project self-throttle: skip ticks once trailing-5h spend hits this. `0` disables. |
 | `max_worker_attempts` | How many times a worker may attempt an issue before it is moved to `agent-blocked`. Default `3`. |
+| `worker_escalation_model` | Model to use for a worker retry once `worker_escalation_after` prior attempts exist. Empty string (default) disables escalation. |
+| `worker_escalation_after` | Number of prior attempts (same cycle-detection count) before escalating to `worker_escalation_model`. Default `1`. |
 | `telemetry.show_rolling_budget_in_status` | `true` updates `state/STATUS.md` with a spend bar on every tick. |
 | `active_hours` | Only run between `start` and `end` (24-hour clock). |
 | `github.repo` | Required. GitHub repo as `owner/repo`. |
@@ -213,12 +218,55 @@ if a worker stalls).
 
 - **Weekly cap.** Pacing only smooths the 5-hour window. Near the weekly ceiling, the only
   fix is genuinely fewer/cheaper tasks — keep issues small and Haiku-only.
+- **schedule.json must be committed.** It's a tracked file in your project repo, not a
+  local-only config. If you edit it and don't commit, any git operation that touches the
+  tree (`git pull`, `git checkout <branch>`, a maintainer's `git reset --hard origin/main`)
+  can silently discard your changes. Commit schedule.json edits like any other change:
+  `git add schedule.json && git commit -m "adjust schedule"`. The dispatcher logs a
+  warning if it detects uncommitted changes.
 - **Headless permissions.** Background runs auto-deny prompts. `settings.json` pre-allows
   common safe tools and workers run in `acceptEdits`. If a worker stalls, widen the allow
   list. As a last resort in a sandboxed dir, add `--dangerously-skip-permissions` to the
-  `claude` call in `dispatcher.sh` — understand the risk first.
+  `claude` call in `dispatcher.sh` — understand the risk first. This applies to **platform
+  build tools** too (e.g. `xcodebuild`, `xcodegen`, `xcrun` for iOS projects, or your
+  stack's equivalent) — interactive approval in your own terminal session does NOT extend
+  to cron-spawned headless runs. It also applies to **any MCP tool** the agents use: add
+  the MCP tool name to `permissions.allow` the same way. Without this, agents burn every
+  turn retrying a blocked command and still get logged as "complete" with zero real output
+  — see the max-turns caveat below. (This includes any MCP tool used for karen's optional
+  cross-model review — see karen.md.)
+- **Max-turns exhaustion looks like success.** If an agent hits its turn limit mid-task,
+  the dispatcher logs it as "treating as complete" and still advances the issue (worker →
+  `agent-review`, karen still requires a verdict). This is BY DESIGN so a stuck agent
+  doesn't loop forever, but it means "ran" in the log does not mean "did the work." The
+  real signal to check is `logs/activity.log` for the line `MAX-TURNS-EXHAUSTED:` — if it
+  co-occurs with `cost=$0` or no real artifact/summary written, the run produced nothing
+  useful and needs a manual retry or a smaller task. Don't assume a logged run succeeded
+  just because the dispatcher moved the issue forward.
+- **Don't run agents in parallel on one checkout.** The dispatcher itself is single-flight
+  (the lock in `scripts/dispatcher.sh` guarantees one tick at a time) — this is not a risk
+  from normal cron operation. It only bites if you bypass the dispatcher: e.g. hand-invoking
+  multiple `claude --agent worker` sessions yourself, or running two checkouts of the same
+  project against the same branch. Two agents editing the same files on the same working
+  tree will stomp each other's changes. If you genuinely need parallel agent execution,
+  give each agent its own `git worktree` (or an equivalent isolated checkout) rather than
+  sharing one tree.
+- **Silent throttling.** When the per-project soft budget (`soft_budget_usd_per_5h`) is hit,
+  the dispatcher just logs `throttled: $X in last 5h >= per-project soft budget $Y` once
+  per 10-minute tick and exits — there's no other signal. Don't assume a quiet project is
+  idle-and-fine; check `logs/activity.log` for repeated `throttled:` lines, and
+  `state/STATUS.md` for the rolling spend bar (when
+  `telemetry.show_rolling_budget_in_status` is true) to see spend relative to the cap.
+  If you expect work to be happening and see only `throttled:` lines, raise
+  `soft_budget_usd_per_5h` or wait for the 5h window to roll over.
 - **Flag check.** If `dispatcher.log` shows an "unknown option" error, run `claude --help`
   and align the flags in `dispatcher.sh` with the installed version.
+
+To give karen an optional second-opinion model, register an MCP server for the project
+(`claude mcp add <name> ...` — see `claude mcp --help`), then add its tool name to
+`karen.md`'s `tools:` frontmatter and to `settings.json`'s `permissions.allow` list
+(headless runs need it allowlisted the same as any other tool — see the Headless
+permissions caveat above).
 
 ## Bundled files
 
