@@ -198,6 +198,39 @@ gh pr create --repo "<REPO>" --base "$base" --head "$work" \
 
 NEVER push to or merge `<base_branch>` — the client reviews and merges.
 
+### Handling rebase conflicts in generated files
+
+If a rebase or merge produces conflicts confined to an **auto-generated** file (e.g. an
+Xcode `.xcodeproj`/`project.pbxproj` produced by `xcodegen`, a lockfile, or any file your
+project's tooling regenerates from a source config), do NOT hand-resolve the conflict
+markers — they are noise, not signal. Instead:
+
+1. Abort or resolve the conflict by taking either side for the generated file.
+2. Re-run the project's generator command (e.g. `xcodegen generate`) to regenerate it cleanly.
+3. Verify the regenerated file builds before committing.
+
+Only hand-resolve conflicts in files that are genuinely hand-authored (source code, specs).
+
+### Rebasing a work branch (never force-push)
+
+`settings.json` denies `git push --force:*` and direct pushes to `<base_branch>` on purpose
+— this is intentional friction, not a bug to work around. If `<work_branch>` needs a rebase
+(e.g. to pick up a regenerated file per the section above, or to resolve staleness against
+`<base_branch>`), do NOT force-push a rewritten history. Instead:
+
+```bash
+base=$(jq -r '.github.base_branch // "main"'  schedule.json)
+new_work="agents/work-$(date +%s)"
+git checkout -b "$new_work" "$base"
+git cherry-pick <original-commit-sha(s)>   # or re-apply the diff cleanly
+git push -u origin "$new_work"
+gh pr create --repo "<REPO>" --base "$base" --head "$new_work" \
+  --title "<summary>" --body "<what / why + karen verdict>. Closes #<n>"
+```
+
+Push the rebased commit(s) to a **new branch name** and open a fresh PR rather than
+force-pushing history over the old `work_branch`. Close the stale PR if one exists.
+
 ---
 
 ## Asking the client

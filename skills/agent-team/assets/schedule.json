@@ -8,6 +8,9 @@
   "lead_paused": false,
   "lead_windows": [0],
   "soft_budget_usd_per_5h": 2,
+  "max_worker_attempts": 3,
+  "worker_escalation_model": "",
+  "worker_escalation_after": 1,
   "telemetry": {
     "show_rolling_budget_in_status": true
   },

@@ -51,6 +51,7 @@ drop goal ──▶ lead-inbox/     You ──▶ GitHub Issue (agent-todo)
 | `agent-backlog` | Sequenced task waiting on `depends_on:` issues to close. |
 | `agent-triage` | User-submitted issue awaiting lead priority/timing questions. |
 | `agent-question` | Lead needs your input; answer by commenting on the issue. |
+| `agent-blocked` | Exceeded retry limit. Needs manual attention or lead decomposition. |
 
 ---
 
@@ -154,6 +155,8 @@ Edit `schedule.json` (or ask the PM):
 | Lead runs at :00 and :30 | `"lead_windows": [0, 30]` |
 | Per-project spend cap | `"soft_budget_usd_per_5h": 5` |
 | Only run 9–5 | `"active_hours": {"start": 9, "end": 17}` |
+| Change retry limit | `"max_worker_attempts": 5` |
+| Lead running too often/expensive | Reduce `lead_windows` frequency, e.g. `[0]` (hourly) instead of `[0,10,20,30,40,50]` |
 
 ### Global budget (across all projects)
 
@@ -224,6 +227,9 @@ board (update `project_number` to the same value in each repo's `schedule.json`)
 | `github.base_branch` | `main` | Branch agents never push to directly. |
 | `github.work_branch` | `agents/work` | Branch for staging verified work before PRs. |
 | `github.project_number` | _(optional)_ | Projects v2 board number. Set by `setup-project.sh`. |
+| `max_worker_attempts` | `3` | Max worker attempts before moving issue to `agent-blocked`. |
+| `worker_escalation_model` | `""` (disabled) | Model to use for a worker retry once `worker_escalation_after` prior attempts exist. Empty string disables escalation. |
+| `worker_escalation_after` | `1` | Number of prior attempts (same cycle-detection count) before escalating to `worker_escalation_model`. |
 
 ---
 
@@ -231,12 +237,55 @@ board (update `project_number` to the same value in each repo's `schedule.json`)
 
 - **Weekly cap.** Pacing smooths the 5-hour window but can't extend the weekly limit. Keep
   issues small and Haiku-only when approaching it.
+- **schedule.json must be committed.** It's a tracked file in your project repo, not a
+  local-only config. If you edit it and don't commit, any git operation that touches the
+  tree (`git pull`, `git checkout <branch>`, a maintainer's `git reset --hard origin/main`)
+  can silently discard your changes. Commit schedule.json edits like any other change:
+  `git add schedule.json && git commit -m "adjust schedule"`. The dispatcher logs a
+  warning if it detects uncommitted changes.
 - **Headless permissions.** Background runs auto-deny permission prompts. `settings.json`
   pre-allows common safe tools. If a worker stalls, widen the allowlist or add
-  `--dangerously-skip-permissions` to the `claude` call in `dispatcher.sh`.
+  `--dangerously-skip-permissions` to the `claude` call in `dispatcher.sh`. This applies to
+  **platform build tools** too (e.g. `xcodebuild`, `xcodegen`, `xcrun` for iOS projects, or
+  your stack's equivalent) — interactive approval in your own terminal session does NOT
+  extend to cron-spawned headless runs. It also applies to **any MCP tool** the agents use:
+  add the MCP tool name to `permissions.allow` the same way. Without this, agents burn every
+  turn retrying a blocked command and still get logged as "complete" with zero real output —
+  see the max-turns caveat below. (This includes any MCP tool used for karen's optional
+  cross-model review — see karen.md.)
+- **Max-turns exhaustion looks like success.** If an agent hits its turn limit mid-task,
+  the dispatcher logs it as "treating as complete" and still advances the issue (worker →
+  `agent-review`, karen still requires a verdict). This is BY DESIGN so a stuck agent
+  doesn't loop forever, but it means "ran" in the log does not mean "did the work." The
+  real signal to check is `logs/activity.log` for the line `MAX-TURNS-EXHAUSTED:` — if it
+  co-occurs with `cost=$0` or no real artifact/summary written, the run produced nothing
+  useful and needs a manual retry or a smaller task. Don't assume a logged run succeeded
+  just because the dispatcher moved the issue forward.
+- **Don't run agents in parallel on one checkout.** The dispatcher itself is single-flight
+  (the lock in `scripts/dispatcher.sh` guarantees one tick at a time) — this is not a risk
+  from normal cron operation. It only bites if you bypass the dispatcher: e.g. hand-invoking
+  multiple `claude --agent worker` sessions yourself, or running two checkouts of the same
+  project against the same branch. Two agents editing the same files on the same working
+  tree will stomp each other's changes. If you genuinely need parallel agent execution,
+  give each agent its own `git worktree` (or an equivalent isolated checkout) rather than
+  sharing one tree.
+- **Silent throttling.** When the per-project soft budget (`soft_budget_usd_per_5h`) is hit,
+  the dispatcher just logs `throttled: $X in last 5h >= per-project soft budget $Y` once
+  per 10-minute tick and exits — there's no other signal. Don't assume a quiet project is
+  idle-and-fine; check `logs/activity.log` for repeated `throttled:` lines, and
+  `state/STATUS.md` for the rolling spend bar (when
+  `telemetry.show_rolling_budget_in_status` is true) to see spend relative to the cap.
+  If you expect work to be happening and see only `throttled:` lines, raise
+  `soft_budget_usd_per_5h` or wait for the 5h window to roll over.
 - **Token expiry.** OAuth tokens expire. If all agents fail with `rc=1`, run
   `claude setup-token` and update `.env`. The global budget check will pause agents rather
   than loop on repeated failures (which is what caused the token-burn incident).
 - **cron environment.** cron runs with a bare PATH. `.env` must set `PATH` and
   `CLAUDE_CODE_OAUTH_TOKEN`. Copy from `.env.example` and verify with
   `env -i bash -c '. .env; claude --version'`.
+
+To give karen an optional second-opinion model, register an MCP server for the project
+(`claude mcp add <name> ...` — see `claude mcp --help`), then add its tool name to
+`karen.md`'s `tools:` frontmatter and to `settings.json`'s `permissions.allow` list
+(headless runs need it allowlisted the same as any other tool — see the Headless
+permissions caveat above).
