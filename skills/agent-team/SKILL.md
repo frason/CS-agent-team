@@ -17,7 +17,7 @@ low and paced so a long session never burns the rolling 5-hour limit all at once
 |--------|------|-------|-----|
 | PM     | interactive (client opens it) | haiku | First-time setup, status reporting, scheduling, relaying lead questions. The only role the client talks to directly. |
 | Lead   | scheduled, `lead_windows` | sonnet | Drains `lead-inbox/`, decomposes goals into GitHub Issues, manages sequencing via `depends_on`. |
-| Worker | scheduled, staggered | haiku | Executes one `agent-todo` issue; writes summary to `state/worker_output.txt`. |
+| Worker | scheduled, staggered | haiku | Executes one `agent-todo` issue; writes summary to `state/worker_output_<issue-number>.txt`. |
 | Karen  | scheduled, gated | sonnet | Independently verifies finished work; writes verdict to `state/verdict.txt`; never edits source. |
 
 ## How it works
@@ -208,8 +208,10 @@ if a worker stalls).
 
 ## Token-saving choices baked in
 
-- Workers write summaries to `state/worker_output.txt` (≤40 lines) posted as comments;
-  full output stays in the repo. This keeps agent contexts tiny — the biggest lever.
+- Workers write summaries to a per-issue `state/worker_output_<issue-number>.txt` (≤40 lines)
+  posted as comments; full output stays in the repo. This keeps agent contexts tiny — the
+  biggest lever. Per-issue (not shared) so a worker on a newer issue can never overwrite the
+  file karen is about to read for an older issue still stuck retrying verification.
 - Cheap models per role (Haiku workers, Sonnet verifier only where judgment matters).
 - `maxTurns` + `effort: low` cap cost per worker run.
 - `state/STATUS.md` stays short; history lives in `logs/`, so reads stay cheap.

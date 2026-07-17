@@ -100,7 +100,8 @@ gh issue create --repo "<REPO>" \
 <concrete, checkable completion criteria>
 
 ## Output
-Write a concise summary (≤40 lines) to state/worker_output.txt.
+Write a concise summary (≤40 lines) to your designated output file (the exact
+per-issue path is given in your task prompt when the worker runs).
 
 <!-- agent-planned -->
 BODY
@@ -126,7 +127,8 @@ depends_on: #12, #15
 <concrete, checkable completion criteria>
 
 ## Output
-Write a concise summary (≤40 lines) to state/worker_output.txt.
+Write a concise summary (≤40 lines) to your designated output file (the exact
+per-issue path is given in your task prompt when the worker runs).
 
 <!-- agent-planned -->
 BODY

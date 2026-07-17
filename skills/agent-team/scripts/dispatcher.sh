@@ -523,6 +523,7 @@ ${verdict_text}
     gh issue edit  "$iss_num" --repo "$REPO" \
       --remove-label "agent-review" --add-label "agent-done" >/dev/null 2>&1 || true
     gh issue close "$iss_num" --repo "$REPO" >/dev/null 2>&1 || true
+    rm -f "$STATE/worker_output_${iss_num}.txt"
     log "  issue #$iss_num PASSED — labelled agent-done, closed"
   else
     gh issue edit "$iss_num" --repo "$REPO" \
@@ -584,6 +585,7 @@ The lead will review this on its next pass. It may need to be:
 
 To retry manually: remove the \`agent-blocked\` label and add \`agent-todo\`." \
     >/dev/null 2>&1 || true
+  rm -f "$STATE/worker_output_${iss_num}.txt"
   exit 0
 fi
 
@@ -600,7 +602,12 @@ check_global_budget
 gh issue edit "$iss_num" --repo "$REPO" \
   --remove-label "agent-todo" --add-label "agent-doing" >/dev/null 2>&1 || true
 
-output_file="$STATE/worker_output.txt"
+# Per-issue output path — NOT a shared file. The dispatcher only runs one worker at a
+# time, but karen may still be retrying verification on an older issue (e.g. crashing
+# repeatedly) while a newer issue's worker runs in the meantime. A shared path would let
+# that newer worker overwrite the file karen is about to read for the older issue,
+# producing a false "wrong output" FAIL unrelated to the older issue's actual code.
+output_file="$STATE/worker_output_${iss_num}.txt"
 rm -f "$output_file"
 
 tmp=$(mktemp)
@@ -615,10 +622,10 @@ ${iss_body}
 Instructions:
 1. Read only the files you actually need — do not explore the entire repository.
 2. Do the work described. Stay strictly in scope; do not expand requirements.
-3. When finished, write a concise technical markdown summary to state/worker_output.txt.
+3. When finished, write a concise technical markdown summary to state/worker_output_${iss_num}.txt.
    Include: what you did, which files were changed or created, any caveats or follow-up items.
    Keep it under 40 lines — this will be posted as a GitHub issue comment.
-4. If the task is ambiguous or blocked, write what you found to state/worker_output.txt,
+4. If the task is ambiguous or blocked, write what you found to state/worker_output_${iss_num}.txt,
    state the blocker clearly, and stop — do not guess or broaden scope.
 
 Your summary will be posted to the issue and then independently verified by karen.
@@ -640,7 +647,7 @@ rm -f "$tmp"
 if [ -f "$output_file" ]; then
   summary=$(cat "$output_file")
 else
-  summary="_Worker completed issue #${iss_num} but did not write state/worker_output.txt._"
+  summary="_Worker completed issue #${iss_num} but did not write its output file._"
 fi
 
 gh issue comment "$iss_num" --repo "$REPO" \
