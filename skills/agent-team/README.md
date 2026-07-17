@@ -46,7 +46,7 @@ drop goal ──▶ lead-inbox/     You ──▶ GitHub Issue (agent-todo)
 |-------|---------|
 | `agent-todo` | Queued. Worker will claim on the next eligible tick. |
 | `agent-doing` | Claimed by the dispatcher (prevents double-dispatch). |
-| `agent-review` | Worker done; karen will verify next. |
+| `agent-review` | Worker done; karen will verify next. A karen crash or missing verdict retries karen in place here — it does NOT bounce back to `agent-todo` or touch the worker's attempt count; only a genuine FAILED verdict does that. |
 | `agent-done` | Karen passed; issue closed. |
 | `agent-backlog` | Sequenced task waiting on `depends_on:` issues to close. |
 | `agent-triage` | User-submitted issue awaiting lead priority/timing questions. |
@@ -261,6 +261,13 @@ board (update `project_number` to the same value in each repo's `schedule.json`)
   co-occurs with `cost=$0` or no real artifact/summary written, the run produced nothing
   useful and needs a manual retry or a smaller task. Don't assume a logged run succeeded
   just because the dispatcher moved the issue forward.
+- **A karen crash is not a FAILED verdict.** If karen crashes or exits without writing
+  `state/verdict.txt` (e.g. a CLI/subscription outage — the same `$0`-cost signal used for
+  worker outages), the issue stays in `agent-review` and karen retries next cycle. It does
+  NOT bounce back to `agent-todo` — that would make the worker redo already-correct work
+  and burn a `max_worker_attempts` retry for every karen infrastructure hiccup, unrelated
+  to the actual code. Only a genuine FAILED verdict (karen ran successfully and found real
+  problems) sends the issue back to the worker.
 - **Don't run agents in parallel on one checkout.** The dispatcher itself is single-flight
   (the lock in `scripts/dispatcher.sh` guarantees one tick at a time) — this is not a risk
   from normal cron operation. It only bites if you bypass the dispatcher: e.g. hand-invoking
