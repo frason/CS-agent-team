@@ -53,6 +53,10 @@ low and paced so a long session never burns the rolling 5-hour limit all at once
   answers by commenting; the lead reads comments on its next pass and closes the issue.
 - **FAILED karen verdict** cycles the issue back to `agent-todo` with a comment explaining
   what needs fixing, so the worker retries on the next eligible tick.
+- **A karen crash is different from a FAILED verdict**: if karen exits non-zero or writes
+  no `state/verdict.txt` (a CLI/subscription outage), the issue stays in `agent-review` and
+  karen retries next cycle — it does NOT bounce to `agent-todo` or touch the worker's
+  `max_worker_attempts` count. Only a real FAILED verdict sends work back to the worker.
 
 ```
 drop file ─▶ lead-inbox/          You ─ create GitHub Issues ─▶ (agent-todo)
@@ -243,6 +247,13 @@ if a worker stalls).
   co-occurs with `cost=$0` or no real artifact/summary written, the run produced nothing
   useful and needs a manual retry or a smaller task. Don't assume a logged run succeeded
   just because the dispatcher moved the issue forward.
+- **A karen crash is not a FAILED verdict.** If karen crashes or exits without writing
+  `state/verdict.txt` (e.g. a CLI/subscription outage — the same `$0`-cost signal used for
+  worker outages), the issue stays in `agent-review` and karen retries next cycle. It does
+  NOT bounce back to `agent-todo` — that would make the worker redo already-correct work
+  and burn a `max_worker_attempts` retry for every karen infrastructure hiccup, unrelated
+  to the actual code. Only a genuine FAILED verdict (karen ran successfully and found real
+  problems) sends the issue back to the worker.
 - **Don't run agents in parallel on one checkout.** The dispatcher itself is single-flight
   (the lock in `scripts/dispatcher.sh` guarantees one tick at a time) — this is not a risk
   from normal cron operation. It only bites if you bypass the dispatcher: e.g. hand-invoking

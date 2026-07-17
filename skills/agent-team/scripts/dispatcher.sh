@@ -211,6 +211,7 @@ run_agent() {
   else
     cost=0; subtype=""
   fi
+  LAST_RUN_COST="$cost"
 
   if [ "$rc" -ne 0 ]; then
     if [ "$subtype" = "error_max_turns" ]; then
@@ -484,18 +485,27 @@ PROMPT
   record_global_spend
   rm -f "$tmp"
 
-  # Guard: if karen produced no verdict (crash or silent failure), cycle back.
+  # Guard: if karen produced no verdict (crash or silent failure), retry karen —
+  # do NOT bounce the issue back to agent-todo. A karen crash means the VERIFIER
+  # failed, not the worker; sending it to agent-todo makes the worker redo already-
+  # correct work and burns a worker attempt for every karen hiccup.
+  # The issue stays in agent-review; the next tick's VERIFY rule picks it right back up.
   if [ ! -f "$verdict_file" ]; then
-    if [ "$karen_ok" = "false" ]; then
-      log "  karen run failed (rc non-zero) — cycling #$iss_num back to agent-todo"
-      msg="⚠️ **Verifier run failed** (claude exited non-zero). Cycling back to \`agent-todo\` — check \`logs/dispatcher.log\` for the error."
+    if [ "$(jq -n --argjson c "${LAST_RUN_COST:-0}" '$c == 0')" = "true" ]; then
+      # $0 crash = CLI/subscription outage (same pattern as worker outages) —
+      # don't post a comment, just retry karen next tick.
+      log "  karen crashed at \$0 cost (outage) — retrying #$iss_num in agent-review, NOT bounced to agent-todo"
+    elif [ "$karen_ok" = "false" ]; then
+      log "  karen run failed (rc non-zero) — retrying #$iss_num in agent-review"
+      gh issue comment "$iss_num" --repo "$REPO" \
+        --body "⚠️ **Verifier run failed** (claude exited non-zero). Retrying verification next cycle — check \`logs/dispatcher.log\` for the error." \
+        >/dev/null 2>&1 || true
     else
-      log "  karen did not write verdict.txt — cycling #$iss_num back to agent-todo"
-      msg="⚠️ **Verifier did not produce a verdict.** Cycling back to \`agent-todo\` for retry."
+      log "  karen did not write verdict.txt — retrying #$iss_num in agent-review"
+      gh issue comment "$iss_num" --repo "$REPO" \
+        --body "⚠️ **Verifier did not produce a verdict.** Retrying verification next cycle." \
+        >/dev/null 2>&1 || true
     fi
-    gh issue comment "$iss_num" --repo "$REPO" --body "$msg" >/dev/null 2>&1 || true
-    gh issue edit "$iss_num" --repo "$REPO" \
-      --remove-label "agent-review" --add-label "agent-todo" >/dev/null 2>&1 || true
     exit 0
   fi
 
