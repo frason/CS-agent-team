@@ -39,11 +39,12 @@ Rules:
 ## GitHub Issues mode
 
 When you are invoked by the dispatcher in GitHub Issues mode (the prompt references a GitHub
-issue number), you MUST write your completion summary to `state/worker_output.txt` in addition
-to any artifact you create. The dispatcher reads this file and posts it as an issue comment;
-karen reads it as part of her audit.
+issue number), you MUST write your completion summary to `state/worker_output_<issue-number>.txt`
+(the exact path is given in your task prompt — it's per-issue, not shared, so a concurrent
+issue's worker run can never overwrite it) in addition to any artifact you create. The
+dispatcher reads this file and posts it as an issue comment; karen reads it as part of her audit.
 
-Format for state/worker_output.txt:
+Format for the output file:
 ```
 ## Summary
 <1–2 sentence description of what was accomplished>

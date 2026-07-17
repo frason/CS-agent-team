@@ -13,7 +13,7 @@ subscription via a 10-minute cron heartbeat.
 |------|------|-------|-----|
 | PM | Interactive (you open it) | Haiku | Setup wizard, status, scheduling, budget. The only role you talk to directly. |
 | Lead | Scheduled (`lead_windows`) + on-demand triage | Sonnet | Drains `lead-inbox/`, plans goals into GitHub Issues, triages user-submitted tasks. |
-| Worker | Scheduled, staggered | Haiku | Executes one `agent-todo` issue; writes summary to `state/worker_output.txt`. |
+| Worker | Scheduled, staggered | Haiku | Executes one `agent-todo` issue; writes summary to `state/worker_output_<issue-number>.txt`. |
 | Karen | Scheduled, gated on agent-review | Sonnet | Verifies finished work; writes verdict to `state/verdict.txt`; never edits source. |
 
 ---
