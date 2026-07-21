@@ -70,6 +70,17 @@ GLOBAL_BUDGET_FILE="${HOME}/.claude/agent-team-budget.json"
 
 mkdir -p "$STATE" "$ROOT/logs" "$INBOX/done"
 
+# ---- project-local tool shims for agent runs (optional) ----
+# If the project provides scripts/agent-bin/, prepend it to PATH so agent runs
+# pick up wrapped tools. Ported from Backcountry AI: an xcodebuild shim there
+# injects a dedicated -derivedDataPath so agent builds never share a build.db
+# with the client's interactive Xcode session ("database is locked" /
+# build-service inconsistency when both build the same project concurrently).
+if [ -d "$ROOT/scripts/agent-bin" ]; then
+  export AGENT_DERIVED_DATA="$HOME/Library/Developer/Xcode/DerivedData/agents-$(basename "$ROOT" | tr ' ' '-')"
+  export PATH="$ROOT/scripts/agent-bin:$PATH"
+fi
+
 TS()  { date +%Y-%m-%dT%H:%M:%S; }
 log() { echo "$(TS) $*" | tee -a "$ACTIVITY"; }
 
